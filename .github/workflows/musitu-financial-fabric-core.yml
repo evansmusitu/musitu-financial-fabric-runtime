@@ -1,0 +1,101 @@
+name: MUSITU Financial Fabric — Core Gate
+
+on:
+  push:
+    branches: [musitu-financial-fabric]
+    paths:
+      - 'musitu_financial_fabric/**'
+      - '.github/workflows/musitu-financial-fabric-*.yml'
+  pull_request:
+    paths:
+      - 'musitu_financial_fabric/**'
+      - '.github/workflows/musitu-financial-fabric-*.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  core:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: musitu_financial_fabric
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: musitu_financial_fabric/pyproject.toml
+      - name: Install
+        run: python -m pip install -U pip && python -m pip install -e '.[dev]'
+      - name: Compile
+        run: python -m compileall -q app scripts tests
+      - name: Unit and integration tests
+        run: pytest -q
+      - name: Verify mandatory manifest
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=json.loads(Path('stack/required-components.json').read_text())
+          assert p['all_required'] is True
+          assert len(p['components']) == 39, len(p['components'])
+          assert all(x['required'] is True for x in p['components'])
+          print('mandatory-components=39 all_required=true')
+          PY
+      - name: Boot API and smoke endpoints
+        run: |
+          uvicorn app.main:app --host 127.0.0.1 --port 8000 > /tmp/musitu-api.log 2>&1 &
+          echo $! > /tmp/musitu-api.pid
+          for i in {1..30}; do curl -fsS http://127.0.0.1:8000/health && break || sleep 1; done
+          curl -fsS http://127.0.0.1:8000/v1/fabric/components > /tmp/components.json
+          python - <<'PY'
+          import json
+          p=json.load(open('/tmp/components.json'))
+          assert p['required'] is True
+          assert len(p['components']) == 39
+          PY
+          code=$(curl -sS -o /tmp/mpp.json -w '%{http_code}' 'http://127.0.0.1:8000/mpp/challenge?amount_minor=1&currency=USD&resource=test')
+          test "$code" = 402
+          code=$(curl -sS -o /tmp/x402.json -w '%{http_code}' 'http://127.0.0.1:8000/x402/challenge?amount_minor=1&currency=USD&resource=test')
+          test "$code" = 402
+          kill "$(cat /tmp/musitu-api.pid)"
+      - name: Confirm Docker-capable GitHub runner
+        run: docker version && docker compose version
+
+  tooling:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: musitu_financial_fabric
+    steps:
+      - uses: actions/checkout@v4
+      - uses: sigstore/cosign-installer@v3
+      - uses: opentofu/setup-opentofu@v1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install mandatory API tooling
+        run: npm install -g @openapitools/openapi-generator-cli @stoplight/prism-cli
+      - name: Verify mandatory tooling executables
+        run: |
+          cosign version
+          tofu version
+          openapi-generator-cli version
+          prism --version
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Generate MUSITU OpenAPI and SDK
+        run: |
+          python -m pip install -e .
+          python - <<'PY'
+          import json
+          from app.main import app
+          open('musitu-openapi.json','w').write(json.dumps(app.openapi(), indent=2))
+          PY
+          openapi-generator-cli generate -i musitu-openapi.json -g python -o generated-sdk/python >/tmp/openapi-generator.log 2>&1
+          test -f generated-sdk/python/README.md
+      - name: Validate OpenTofu
+        run: tofu -chdir=infra init -backend=false && tofu -chdir=infra validate
