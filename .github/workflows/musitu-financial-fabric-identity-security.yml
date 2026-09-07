@@ -1,0 +1,123 @@
+name: MUSITU Financial Fabric — Identity Security
+
+on:
+  push:
+    branches: [musitu-financial-fabric]
+    paths:
+      - 'control/musitu-financial-fabric/**'
+      - '.github/workflows/musitu-financial-fabric-*.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  keycloak:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start Keycloak
+        run: |
+          docker run -d --name musitu-keycloak -p 8080:8080 \
+            -e KC_BOOTSTRAP_ADMIN_USERNAME=admin \
+            -e KC_BOOTSTRAP_ADMIN_PASSWORD=musitu-ci \
+            quay.io/keycloak/keycloak:latest start-dev
+      - name: Verify Keycloak master realm
+        run: |
+          for i in {1..90}; do curl -fsS http://127.0.0.1:8080/realms/master >/tmp/keycloak.json && break || sleep 2; done
+          python - <<'PY'
+          import json
+          p=json.load(open('/tmp/keycloak.json'))
+          assert p['realm'] == 'master'
+          PY
+
+  openfga:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start OpenFGA
+        run: docker run -d --name musitu-openfga -p 8080:8080 openfga/openfga:latest run
+      - name: Create and verify authorization store
+        run: |
+          for i in {1..60}; do curl -fsS http://127.0.0.1:8080/stores >/dev/null && break || sleep 1; done
+          curl -fsS -X POST http://127.0.0.1:8080/stores -H 'Content-Type: application/json' -d '{"name":"musitu-ci"}' | tee /tmp/openfga-store.json
+          python - <<'PY'
+          import json
+          p=json.load(open('/tmp/openfga-store.json'))
+          assert p.get('id') and p.get('name') == 'musitu-ci'
+          PY
+
+  openbao:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start OpenBao dev server
+        run: |
+          docker run -d --name musitu-openbao -p 8200:8200 \
+            -e BAO_DEV_ROOT_TOKEN_ID=musitu-ci \
+            openbao/openbao:latest server -dev -dev-listen-address=0.0.0.0:8200
+      - name: Verify OpenBao health
+        run: |
+          for i in {1..60}; do curl -fsS http://127.0.0.1:8200/v1/sys/health >/tmp/openbao.json && break || sleep 1; done
+          python - <<'PY'
+          import json
+          p=json.load(open('/tmp/openbao.json'))
+          assert p.get('initialized') is True and p.get('sealed') is False
+          PY
+
+  opensearch:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start OpenSearch
+        run: |
+          docker run -d --name musitu-opensearch -p 9200:9200 \
+            -e 'discovery.type=single-node' \
+            -e 'DISABLE_SECURITY_PLUGIN=true' \
+            -e 'OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m' \
+            opensearchproject/opensearch:latest
+      - name: Verify OpenSearch cluster
+        run: |
+          for i in {1..120}; do curl -fsS http://127.0.0.1:9200 >/tmp/opensearch.json && break || sleep 2; done
+          python - <<'PY'
+          import json
+          p=json.load(open('/tmp/opensearch.json'))
+          assert 'cluster_name' in p and 'version' in p
+          PY
+
+  telemetry-edge:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create OpenTelemetry configuration
+        run: |
+          cat > "$RUNNER_TEMP/otel.yaml" <<'EOF'
+          receivers:
+            otlp:
+              protocols:
+                grpc:
+                  endpoint: 0.0.0.0:4317
+                http:
+                  endpoint: 0.0.0.0:4318
+          exporters:
+            debug: {}
+          extensions:
+            health_check:
+              endpoint: 0.0.0.0:13133
+          service:
+            extensions: [health_check]
+            pipelines:
+              traces:
+                receivers: [otlp]
+                exporters: [debug]
+          EOF
+      - name: Start OpenTelemetry Collector
+        run: |
+          docker run -d --name musitu-otel -p 4317:4317 -p 4318:4318 -p 13133:13133 \
+            -v "$RUNNER_TEMP/otel.yaml:/etc/otelcol-contrib/config.yaml:ro" \
+            otel/opentelemetry-collector-contrib:latest
+      - name: Verify collector health
+        run: |
+          for i in {1..60}; do curl -fsS http://127.0.0.1:13133/ && exit 0 || sleep 1; done
+          docker logs musitu-otel
+          exit 1
