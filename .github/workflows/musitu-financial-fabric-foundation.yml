@@ -1,0 +1,94 @@
+name: MUSITU Financial Fabric — Foundation Runtimes
+
+on:
+  push:
+    branches: [musitu-financial-fabric]
+    paths:
+      - 'control/musitu-financial-fabric/**'
+      - '.github/workflows/musitu-financial-fabric-*.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  manifest:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify mandatory manifest
+        run: |
+          python - <<'PY'
+          import json
+          p=json.load(open('control/musitu-financial-fabric/required-components.json'))
+          assert p['all_required'] is True
+          assert len(p['components']) == 39, len(p['components'])
+          assert len(set(p['components'])) == 39
+          print('MUSITU mandatory component count:', len(p['components']))
+          PY
+
+  tigerbeetle:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start TigerBeetle
+        run: |
+          mkdir -p "$RUNNER_TEMP/tb-data"
+          docker run --rm --security-opt seccomp=unconfined \
+            -v "$RUNNER_TEMP/tb-data:/data" ghcr.io/tigerbeetle/tigerbeetle \
+            format --cluster=0 --replica=0 --replica-count=1 /data/0_0.tigerbeetle
+          docker run -d --name musitu-tigerbeetle --security-opt seccomp=unconfined \
+            -p 3000:3000 -v "$RUNNER_TEMP/tb-data:/data" ghcr.io/tigerbeetle/tigerbeetle \
+            start --addresses=0.0.0.0:3000 --cache-grid=256MiB /data/0_0.tigerbeetle
+      - name: Verify TigerBeetle socket
+        run: |
+          for i in {1..30}; do
+            if (echo > /dev/tcp/127.0.0.1/3000) >/dev/null 2>&1; then exit 0; fi
+            sleep 1
+          done
+          docker logs musitu-tigerbeetle
+          exit 1
+
+  data-event-policy:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start PostgreSQL
+        run: docker run -d --name musitu-postgres -e POSTGRES_PASSWORD=musitu-ci -p 5432:5432 postgres:16-alpine
+      - name: Start NATS JetStream
+        run: docker run -d --name musitu-nats -p 4222:4222 -p 8222:8222 nats:2.10-alpine -js -m 8222
+      - name: Start Valkey
+        run: docker run -d --name musitu-valkey -p 6379:6379 valkey/valkey:8-alpine
+      - name: Start ClickHouse
+        run: docker run -d --name musitu-clickhouse -p 8123:8123 clickhouse/clickhouse-server:latest
+      - name: Start OPA
+        run: docker run -d --name musitu-opa -p 8181:8181 openpolicyagent/opa:latest run --server --addr=0.0.0.0:8181
+      - name: Verify foundation services
+        run: |
+          for i in {1..60}; do docker exec musitu-postgres pg_isready -U postgres && break || sleep 1; done
+          docker exec musitu-postgres pg_isready -U postgres
+          for i in {1..30}; do curl -fsS http://127.0.0.1:8222/healthz && break || sleep 1; done
+          curl -fsS http://127.0.0.1:8222/healthz
+          docker exec musitu-valkey valkey-cli ping | grep -q PONG
+          for i in {1..60}; do curl -fsS http://127.0.0.1:8123/ping && break || sleep 1; done
+          curl -fsS http://127.0.0.1:8123/ping | grep -q Ok
+          for i in {1..30}; do curl -fsS http://127.0.0.1:8181/health && break || sleep 1; done
+          curl -fsS http://127.0.0.1:8181/health
+
+  tooling:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: sigstore/cosign-installer@v3
+      - uses: opentofu/setup-opentofu@v1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install API tooling
+        run: npm install -g @openapitools/openapi-generator-cli @stoplight/prism-cli
+      - name: Verify tooling
+        run: |
+          cosign version
+          tofu version
+          openapi-generator-cli version
+          prism --version
