@@ -38,7 +38,7 @@ jobs:
       - name: Start Card Vault
         run: |
           docker run -d --name musitu-card-vault --network host \
-            -v /tmp/card-vault/config/development.toml:/local/config/development.toml:ro \
+            -v /tmp/card-vault/config/development.toml:/local/config/production.toml:ro \
             -e LOCKER__SERVER__HOST=0.0.0.0 \
             -e LOCKER__SERVER__PORT=3001 \
             musitu-card-vault:ci

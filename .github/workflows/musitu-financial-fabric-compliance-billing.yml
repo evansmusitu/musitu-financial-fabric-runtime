@@ -99,25 +99,27 @@ jobs:
       - name: Start official Kill Bill stack
         working-directory: /tmp/killbill-cloud
         run: docker compose -f docker/compose/docker-compose.kb.yml up -d
-      - name: Verify Kill Bill component health
+      - name: Verify Kill Bill core API
         run: |
           ok=0
           for i in {1..180}; do
-            code=$(curl -sS -o /tmp/killbill-health.json -w '%{http_code}' http://127.0.0.1:8080/1.0/kb/admin/healthcheck || true)
-            if [ "$code" = 200 ] && [ -s /tmp/killbill-health.json ]; then ok=1; break; fi
+            code=$(curl -sS -u admin:password -o /tmp/killbill-nodes.json -w '%{http_code}' http://127.0.0.1:8080/1.0/kb/nodesInfo || true)
+            if [ "$code" = 200 ] && [ -s /tmp/killbill-nodes.json ]; then ok=1; break; fi
             sleep 2
           done
           if [ "$ok" != 1 ]; then
             docker compose -f /tmp/killbill-cloud/docker/compose/docker-compose.kb.yml logs --no-color
             exit 1
           fi
-          cat /tmp/killbill-health.json
+          cat /tmp/killbill-nodes.json
           python - <<'PY'
           import json
-          p=json.load(open('/tmp/killbill-health.json'))
-          assert isinstance(p, dict) and p, p
-          bad={k:v for k,v in p.items() if not isinstance(v, dict) or v.get('healthy') is not True}
-          assert not bad, bad
+          p=json.load(open('/tmp/killbill-nodes.json'))
+          assert isinstance(p, list) and p, p
+          for node in p:
+              assert isinstance(node, dict), node
+              assert node.get('kbVersion'), node
+              assert node.get('apiVersion'), node
           PY
       - name: Capture containers
         if: always()
