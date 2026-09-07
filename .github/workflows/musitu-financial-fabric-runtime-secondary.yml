@@ -1,0 +1,123 @@
+name: MUSITU Financial Fabric — Secondary Runtimes
+
+on:
+  push:
+    branches: [musitu-financial-fabric]
+    paths:
+      - 'control/musitu-financial-fabric/**'
+      - '.github/workflows/musitu-financial-fabric-runtime-secondary.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  temporal:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start Temporal development server
+        run: |
+          docker run -d --name musitu-temporal -p 7233:7233 -p 8233:8233 \
+            temporalio/temporal:latest server start-dev --ip 0.0.0.0
+      - name: Verify Temporal UI and frontend
+        run: |
+          for i in {1..90}; do curl -fsS http://127.0.0.1:8233/ >/tmp/temporal-ui.html && break || sleep 1; done
+          test -s /tmp/temporal-ui.html
+          (echo > /dev/tcp/127.0.0.1/7233)
+
+  spire:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Acquire official SPIRE configuration
+        run: git clone --depth 1 --branch v1.15.3 https://github.com/spiffe/spire.git /tmp/spire
+      - name: Start SPIRE server
+        run: |
+          docker run -d --name musitu-spire-server --user 1000:1000 -p 8081:8081 \
+            -v /tmp/spire/conf/server:/etc/spire/server:ro \
+            ghcr.io/spiffe/spire-server:1.15.3 \
+            -config /etc/spire/server/server_container.conf
+      - name: Verify SPIRE server health
+        run: |
+          for i in {1..60}; do
+            if docker exec musitu-spire-server /opt/spire/bin/spire-server healthcheck -socketPath /run/spire/server/private/api.sock; then exit 0; fi
+            sleep 1
+          done
+          docker logs musitu-spire-server
+          exit 1
+
+  envoy:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create minimal MUSITU Envoy config
+        run: |
+          cat > "$RUNNER_TEMP/envoy.yaml" <<'EOF'
+          static_resources:
+            listeners:
+            - name: musitu_listener
+              address:
+                socket_address: { address: 0.0.0.0, port_value: 10000 }
+              filter_chains:
+              - filters:
+                - name: envoy.filters.network.http_connection_manager
+                  typed_config:
+                    '@type': type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                    stat_prefix: musitu_ingress
+                    route_config:
+                      name: musitu_route
+                      virtual_hosts:
+                      - name: musitu
+                        domains: ['*']
+                        routes:
+                        - match: { prefix: '/' }
+                          direct_response:
+                            status: 200
+                            body: { inline_string: 'musitu-envoy-ok' }
+                    http_filters:
+                    - name: envoy.filters.http.router
+                      typed_config:
+                        '@type': type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+          admin:
+            address:
+              socket_address: { address: 0.0.0.0, port_value: 9901 }
+          EOF
+      - name: Start pinned Envoy release
+        run: |
+          docker run -d --name musitu-envoy -p 10000:10000 -p 9901:9901 \
+            -v "$RUNNER_TEMP/envoy.yaml:/etc/envoy/envoy.yaml:ro" envoyproxy/envoy:v1.39.1
+      - name: Verify Envoy listener and admin readiness
+        run: |
+          for i in {1..60}; do curl -fsS http://127.0.0.1:10000/ | grep -q musitu-envoy-ok && break || sleep 1; done
+          curl -fsS http://127.0.0.1:10000/ | grep -q musitu-envoy-ok
+          curl -fsS http://127.0.0.1:9901/ready | grep -q LIVE
+
+  coraza:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+      - name: Clone official Coraza Caddy integration
+        run: git clone --depth 1 https://github.com/corazawaf/coraza-caddy.git /tmp/coraza-caddy
+      - name: Install official Caddy builder dependency
+        run: go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
+      - name: Build and launch Coraza example
+        working-directory: /tmp/coraza-caddy
+        run: go run mage.go buildExample runExample
+      - name: Verify WAF passes benign request and blocks configured rule
+        run: |
+          ready=0
+          for i in {1..120}; do
+            code=$(curl -sS -o /tmp/coraza-ok -w '%{http_code}' http://127.0.0.1:8080/get || true)
+            if [ "$code" = 200 ] && [ -s /tmp/coraza-ok ]; then ready=1; break; fi
+            sleep 1
+          done
+          test "$ready" = 1
+          code=$(curl -sS -D /tmp/coraza-headers -o /tmp/coraza-blocked -w '%{http_code}' http://127.0.0.1:8080/admin || true)
+          test "$code" = 403
+          grep -Eqi '^X-Blocked:[[:space:]]*true' /tmp/coraza-headers
+          echo "Coraza benign=200 blocked=/admin:$code"

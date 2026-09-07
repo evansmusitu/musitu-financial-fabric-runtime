@@ -1,0 +1,153 @@
+name: MUSITU Financial Fabric — Interoperability Runtimes
+
+on:
+  push:
+    branches: [musitu-financial-fabric]
+    paths:
+      - 'control/musitu-financial-fabric/**'
+      - '.github/workflows/musitu-financial-fabric-interop.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  card-vault:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Clone official Hyperswitch Card Vault
+        run: git clone --depth 1 https://github.com/juspay/hyperswitch-card-vault.git /tmp/card-vault
+      - name: Record upstream revision
+        run: git -C /tmp/card-vault rev-parse HEAD | tee /tmp/card-vault.sha
+      - name: Start database and Redis
+        run: |
+          docker run -d --name musitu-vault-pg -e POSTGRES_USER=db_user -e POSTGRES_PASSWORD=db_pass -e POSTGRES_DB=locker -p 5432:5432 postgres:16-alpine
+          docker run -d --name musitu-vault-redis -p 6379:6379 redis:7-alpine
+          for i in {1..60}; do docker exec musitu-vault-pg pg_isready -U db_user -d locker && break || sleep 1; done
+          docker exec musitu-vault-redis redis-cli ping | grep -q PONG
+      - name: Apply Card Vault migrations
+        run: |
+          for f in /tmp/card-vault/migrations/*/up.sql; do
+            docker exec -i musitu-vault-pg psql -v ON_ERROR_STOP=1 -U db_user -d locker < "$f"
+          done
+      - name: Build official Card Vault release image
+        working-directory: /tmp/card-vault
+        run: docker build --build-arg DEV=false -t musitu-card-vault:ci .
+      - name: Start Card Vault
+        run: |
+          docker run -d --name musitu-card-vault --network host \
+            -v /tmp/card-vault/config/development.toml:/local/config/development.toml:ro \
+            -e LOCKER__SERVER__HOST=0.0.0.0 \
+            -e LOCKER__SERVER__PORT=3001 \
+            musitu-card-vault:ci
+      - name: Verify Card Vault health
+        run: |
+          for i in {1..90}; do curl -fsS http://127.0.0.1:3001/health >/tmp/card-vault-health.json && break || sleep 1; done
+          cat /tmp/card-vault-health.json
+          grep -qi 'health is good' /tmp/card-vault-health.json
+      - name: Upload evidence
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: musitu-card-vault-evidence
+          path: |
+            /tmp/card-vault.sha
+            /tmp/card-vault-health.json
+
+  rafiki:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Clone official Rafiki with Open Payments specs
+        run: git clone --depth 1 --recurse-submodules https://github.com/interledger/rafiki.git /tmp/rafiki
+      - name: Record upstream revision
+        run: git -C /tmp/rafiki rev-parse HEAD | tee /tmp/rafiki.sha
+      - name: Install exact Rafiki workspace dependencies
+        working-directory: /tmp/rafiki
+        run: |
+          corepack enable
+          corepack prepare pnpm@10.33.0 --activate
+          pnpm install --frozen-lockfile
+      - name: Launch official two-ASE Open Payments playground
+        working-directory: /tmp/rafiki
+        run: pnpm localenv:compose up -d
+      - name: Verify both Open Payments instances and auth endpoints
+        run: |
+          for port in 3000 3006 4000 4006; do
+            ok=0
+            for i in {1..150}; do
+              code=$(curl -sS -o /tmp/rafiki-$port.out -w '%{http_code}' http://127.0.0.1:$port/ || true)
+              if [ "$code" != 000 ]; then ok=1; break; fi
+              sleep 2
+            done
+            test "$ok" = 1
+          done
+          docker ps --format '{{.Names}} {{.Status}}' | tee /tmp/rafiki-containers.txt
+          test "$(grep -ci rafiki /tmp/rafiki-containers.txt)" -gt 0
+      - name: Upload evidence
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: musitu-rafiki-evidence
+          path: |
+            /tmp/rafiki.sha
+            /tmp/rafiki-containers.txt
+
+  stellar-anchor:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+      - name: Clone official Stellar Anchor Platform
+        run: git clone --depth 1 https://github.com/stellar/anchor-platform.git /tmp/anchor-platform
+      - name: Record upstream revision
+        run: git -C /tmp/anchor-platform rev-parse HEAD | tee /tmp/stellar-anchor.sha
+      - name: Install pinned Stellar CLI
+        run: |
+          curl -fsSL -o /tmp/stellar-cli.deb https://github.com/stellar/stellar-cli/releases/download/v28.0.0/stellar-cli_28.0.0_amd64.deb
+          echo '77d6b67b6f9ab8f04563615ae2e7636a3be9d1de762ed7f8790dbfde24c9e055  /tmp/stellar-cli.deb' | sha256sum -c -
+          sudo dpkg -i /tmp/stellar-cli.deb
+          stellar --version
+      - name: Launch official quick-run bootstrap without exposing testnet secrets
+        working-directory: /tmp/anchor-platform/quick-run
+        run: |
+          set +e
+          bash ./ap_start.sh >/tmp/stellar-bootstrap.log 2>&1
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            python - <<'PY'
+          import re
+          from pathlib import Path
+          s = Path('/tmp/stellar-bootstrap.log').read_text(errors='replace')
+          s = re.sub(r'\bS[A-Z2-7]{55}\b', '<redacted-stellar-secret>', s)
+          print(s)
+          PY
+            exit "$rc"
+          fi
+      - name: Verify SEP server and Stellar TOML
+        working-directory: /tmp/anchor-platform/quick-run
+        run: |
+          for i in {1..150}; do curl -fsS http://127.0.0.1:8080/.well-known/stellar.toml >/tmp/stellar.toml && break || sleep 2; done
+          test -s /tmp/stellar.toml
+          grep -Eq 'NETWORK_PASSPHRASE|SIGNING_KEY|TRANSFER_SERVER' /tmp/stellar.toml
+          docker compose ps | tee /tmp/stellar-containers.txt
+          docker compose ps --status running platform | grep -q platform
+      - name: Upload evidence
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: musitu-stellar-anchor-evidence
+          path: |
+            /tmp/stellar-anchor.sha
+            /tmp/stellar.toml
+            /tmp/stellar-containers.txt

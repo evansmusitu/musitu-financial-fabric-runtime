@@ -1,0 +1,113 @@
+name: MUSITU Financial Fabric — Compliance Billing
+
+on:
+  push:
+    branches: [musitu-financial-fabric]
+    paths:
+      - 'control/musitu-financial-fabric/**'
+      - '.github/workflows/musitu-financial-fabric-compliance-billing.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  watchman:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start deterministic Watchman static dataset
+        run: docker run -d --name musitu-watchman -p 8084:8084 moov/watchman:v2-static
+      - name: Verify Watchman search API
+        run: |
+          ok=0
+          for i in {1..90}; do
+            code=$(curl -sS -o /tmp/watchman.json -w '%{http_code}' 'http://127.0.0.1:8084/v2/search?name=Nicolas+Maduro&type=person&limit=1&minMatch=0.75' || true)
+            if [ "$code" = 200 ] && [ -s /tmp/watchman.json ]; then ok=1; break; fi
+            sleep 1
+          done
+          test "$ok" = 1
+          cat /tmp/watchman.json
+          python - <<'PY'
+          import json
+          p=json.load(open('/tmp/watchman.json'))
+          assert isinstance(p, (dict,list))
+          if isinstance(p, dict):
+              assert not p.get('error'), p
+          PY
+
+  tazama-core:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Clone official Tazama stack
+        run: git clone --depth 1 --branch main https://github.com/tazama-lf/tazama-stack.git /tmp/tazama-stack
+      - name: Record Tazama revision
+        run: git -C /tmp/tazama-stack rev-parse HEAD | tee /tmp/tazama.sha
+      - name: Start public DockerHub core plus auth and relay
+        working-directory: /tmp/tazama-stack/core
+        run: |
+          docker compose \
+            -f docker-compose.base.infrastructure.yaml \
+            -f docker-compose.base.override.yaml \
+            -f docker-compose.hub.cfg.yaml \
+            -f docker-compose.hub.core.yaml \
+            -f docker-compose.hub.rules.yaml \
+            -f docker-compose.base.auth.yaml \
+            -f docker-compose.hub.relay.yaml \
+            -f docker-compose.utils.nats-utils.yaml \
+            -p tazama-core up -d --remove-orphans --force-recreate
+      - name: Verify Tazama TMS
+        run: |
+          for i in {1..150}; do curl -fsS http://127.0.0.1:5000 >/tmp/tazama-health.json && break || sleep 2; done
+          cat /tmp/tazama-health.json
+          python - <<'PY'
+          import json
+          p=json.load(open('/tmp/tazama-health.json'))
+          assert str(p.get('status','')).upper() == 'UP', p
+          PY
+      - name: Capture stack evidence in logs
+        if: always()
+        run: |
+          echo '=== Tazama upstream revision ==='
+          cat /tmp/tazama.sha || true
+          echo '=== Tazama health ==='
+          cat /tmp/tazama-health.json || true
+          echo '=== Tazama containers ==='
+          docker ps -a | tee /tmp/tazama-containers.txt
+      - name: Upload evidence (non-gating when GitHub artifact quota is exhausted)
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: musitu-tazama-evidence
+          path: |
+            /tmp/tazama.sha
+            /tmp/tazama-health.json
+            /tmp/tazama-containers.txt
+
+  killbill:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - name: Clone official Kill Bill cloud deployment repo
+        run: git clone --depth 1 https://github.com/killbill/killbill-cloud.git /tmp/killbill-cloud
+      - name: Record Kill Bill deployment revision
+        run: git -C /tmp/killbill-cloud rev-parse HEAD | tee /tmp/killbill-cloud.sha
+      - name: Start official Kill Bill stack
+        working-directory: /tmp/killbill-cloud
+        run: docker compose -f docker/compose/docker-compose.kb.yml up -d
+      - name: Verify Kill Bill HTTP API
+        run: |
+          for i in {1..180}; do
+            code=$(curl -sS -o /tmp/killbill-response.txt -w '%{http_code}' http://127.0.0.1:8080/1.0/healthcheck || true)
+            if [[ "$code" =~ ^2|3 ]]; then exit 0; fi
+            sleep 2
+          done
+          docker compose -f /tmp/killbill-cloud/docker/compose/docker-compose.kb.yml logs --no-color
+          exit 1
+      - name: Capture containers
+        if: always()
+        run: docker ps -a | tee /tmp/killbill-containers.txt
