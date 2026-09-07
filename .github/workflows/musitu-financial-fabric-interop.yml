@@ -44,7 +44,19 @@ jobs:
             musitu-card-vault:ci
       - name: Verify Card Vault health
         run: |
-          for i in {1..90}; do curl -fsS http://127.0.0.1:3001/health >/tmp/card-vault-health.json && break || sleep 1; done
+          ok=0
+          for i in {1..90}; do
+            if curl -fsS http://127.0.0.1:3001/health >/tmp/card-vault-health.json; then ok=1; break; fi
+            sleep 1
+          done
+          if [ "$ok" != 1 ]; then
+            echo '=== Card Vault container state ==='
+            docker ps -a --filter name=musitu-card-vault
+            docker inspect -f 'status={{.State.Status}} exit={{.State.ExitCode}} error={{.State.Error}} finished={{.State.FinishedAt}}' musitu-card-vault || true
+            echo '=== Card Vault logs ==='
+            docker logs musitu-card-vault 2>&1 | tee /tmp/card-vault-container.log || true
+            exit 1
+          fi
           cat /tmp/card-vault-health.json
           grep -qi 'health is good' /tmp/card-vault-health.json
       - name: Upload evidence
@@ -56,6 +68,7 @@ jobs:
           path: |
             /tmp/card-vault.sha
             /tmp/card-vault-health.json
+            /tmp/card-vault-container.log
 
   rafiki:
     runs-on: ubuntu-24.04
