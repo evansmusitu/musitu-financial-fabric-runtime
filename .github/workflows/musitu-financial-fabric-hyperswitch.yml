@@ -1,0 +1,87 @@
+name: MUSITU Financial Fabric — Hyperswitch
+
+on:
+  push:
+    branches: [musitu-financial-fabric]
+    paths:
+      - 'control/musitu-financial-fabric/**'
+      - '.github/workflows/musitu-financial-fabric-*.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  hyperswitch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Clone official Hyperswitch latest branch
+        run: git clone --depth 1 --branch latest https://github.com/juspay/hyperswitch.git /tmp/hyperswitch
+      - name: Record upstream revision
+        run: git -C /tmp/hyperswitch rev-parse HEAD | tee /tmp/hyperswitch.sha
+      - name: Apply upstream Linux Superposition init shell workaround
+        working-directory: /tmp/hyperswitch
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('docker-compose.yml')
+          text = p.read_text()
+          old = 'command: sh -c "apk add --no-cache curl jq yq && sh /seed_superposition.sh"'
+          new = 'command: sh -c "apk add --no-cache bash curl jq yq && bash /seed_superposition.sh"'
+          if old not in text:
+              raise SystemExit('Upstream compose signature changed; refusing an unverified patch')
+          p.write_text(text.replace(old, new, 1))
+          PY
+          grep -F 'bash /seed_superposition.sh' docker-compose.yml
+      - name: Start official standalone stack
+        working-directory: /tmp/hyperswitch
+        run: printf '3\n' | scripts/setup.sh
+      - name: Verify Hyperswitch health and deep readiness
+        run: |
+          health_ok=0
+          for attempt in $(seq 1 60); do
+            if curl -fsS --max-time 3 http://127.0.0.1:8080/health 2>/dev/null | tee /tmp/hyperswitch-health.txt | grep -q 'health is good'; then
+              health_ok=1
+              break
+            fi
+            sleep 2
+          done
+          if [ "$health_ok" -ne 1 ]; then
+            echo 'Hyperswitch did not reach stable /health within the bounded readiness window' >&2
+            docker ps -a
+            docker logs hyperswitch-hyperswitch-server-1 --tail 200 || true
+            exit 1
+          fi
+
+          ready_ok=0
+          for attempt in $(seq 1 60); do
+            if curl -fsS --max-time 5 http://127.0.0.1:8080/health/ready > /tmp/hyperswitch-ready.json 2>/dev/null \
+              && python -c "import json; p=json.load(open('/tmp/hyperswitch-ready.json')); assert p.get('error') is None, p"; then
+              ready_ok=1
+              break
+            fi
+            sleep 2
+          done
+          if [ "$ready_ok" -ne 1 ]; then
+            echo 'Hyperswitch did not reach deep readiness within the bounded readiness window' >&2
+            cat /tmp/hyperswitch-ready.json 2>/dev/null || true
+            docker ps -a
+            docker logs hyperswitch-hyperswitch-server-1 --tail 200 || true
+            exit 1
+          fi
+      - name: Capture containers
+        if: always()
+        run: docker ps -a | tee /tmp/hyperswitch-containers.txt
+      - name: Upload evidence
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: musitu-hyperswitch-evidence
+          path: |
+            /tmp/hyperswitch.sha
+            /tmp/hyperswitch-health.txt
+            /tmp/hyperswitch-ready.json
+            /tmp/hyperswitch-containers.txt
