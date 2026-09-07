@@ -1,0 +1,432 @@
+name: MUSITU Financial Fabric — Gazelle Network Lab
+
+on:
+  push:
+    branches: [musitu-financial-fabric]
+    paths:
+      - 'control/musitu-financial-fabric/**'
+      - '.github/workflows/musitu-financial-fabric-*.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  gazelle:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Runner capacity
+        run: |
+          nproc
+          free -h
+          df -h
+          docker version
+
+      - name: Reclaim hosted-runner disk for Gazelle
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo '=== disk before reclamation ==='
+          df -h /
+          docker system df || true
+
+          # The Gazelle all-stack sandbox pulls a large K3s/containerd image set.
+          # Remove hosted-runner SDK/tool payloads that this workflow does not use
+          # before K3s exists, so no Gazelle runtime image or volume can be pruned.
+          docker system prune -af --volumes || true
+          sudo rm -rf \
+            /usr/local/lib/android \
+            /usr/share/dotnet \
+            /opt/ghc \
+            /usr/local/share/boost \
+            /opt/hostedtoolcache/CodeQL
+          sudo apt-get clean
+          sync
+
+          echo '=== disk after reclamation ==='
+          df -h /
+          docker system df || true
+
+          free_kb="$(df --output=avail -k / | tail -n 1 | tr -d ' ')"
+          required_kb=$((30 * 1024 * 1024))
+          if (( free_kb < required_kb )); then
+            free_gib="$(awk -v kb="$free_kb" 'BEGIN { printf "%.2f", kb/1024/1024 }')"
+            echo "::error::Gazelle requires at least 30 GiB free before deployment; only ${free_gib} GiB is available after safe runner cleanup."
+            exit 1
+          fi
+
+      - name: Acquire Mifos Gazelle v2 deployment source
+        run: git clone --depth 1 --branch main https://github.com/openMF/mifos-gazelle.git /tmp/mifos-gazelle
+
+      - name: Record exact upstream revision
+        run: git -C /tmp/mifos-gazelle rev-parse HEAD | tee /tmp/gazelle.sha
+
+      - name: Reduce PaymentHub CPU reservations for hosted-runner sandbox
+        shell: bash
+        run: |
+          set -euo pipefail
+          values=/tmp/mifos-gazelle/config/ph_values.yaml
+          test -f "$values"
+          cp "$values" /tmp/ph_values.before.yaml
+
+          python3 - "$values" /tmp/paymenthub-cpu-override.txt <<'PY'
+          import pathlib
+          import re
+          import sys
+
+          path = pathlib.Path(sys.argv[1])
+          evidence = pathlib.Path(sys.argv[2])
+          lines = path.read_text(encoding='utf-8').splitlines(keepends=True)
+          changes = []
+          resources_indent = None
+          requests_indent = None
+
+          resources_re = re.compile(r'^(?P<indent>\s*)resources:\s*(?:#.*)?$')
+          requests_re = re.compile(r'^(?P<indent>\s*)requests:\s*(?:#.*)?$')
+          cpu_re = re.compile(
+              r'^(?P<indent>\s*)cpu:\s*(?P<quote>["\']?)(?P<millis>\d+)m(?P=quote)(?P<suffix>\s*(?:#.*)?)$'
+          )
+
+          for idx, raw in enumerate(lines):
+              body = raw.rstrip('\n')
+              stripped = body.strip()
+              if not stripped or stripped.startswith('#'):
+                  continue
+
+              indent = len(body) - len(body.lstrip())
+              resources_match = resources_re.match(body)
+              if resources_match:
+                  resources_indent = len(resources_match.group('indent'))
+                  requests_indent = None
+                  continue
+
+              if resources_indent is None:
+                  continue
+
+              if indent <= resources_indent:
+                  resources_indent = None
+                  requests_indent = None
+                  continue
+
+              requests_match = requests_re.match(body)
+              if requests_match and len(requests_match.group('indent')) > resources_indent:
+                  requests_indent = len(requests_match.group('indent'))
+                  continue
+
+              if requests_indent is not None and indent <= requests_indent:
+                  requests_indent = None
+
+              if requests_indent is None:
+                  continue
+
+              cpu_match = cpu_re.match(body)
+              if not cpu_match or indent <= requests_indent:
+                  continue
+
+              millis = int(cpu_match.group('millis'))
+              if millis <= 25:
+                  continue
+
+              newline = '\n' if raw.endswith('\n') else ''
+              replacement = (
+                  f"{cpu_match.group('indent')}cpu: "
+                  f"{cpu_match.group('quote')}25m{cpu_match.group('quote')}"
+                  f"{cpu_match.group('suffix')}{newline}"
+              )
+              lines[idx] = replacement
+              changes.append((idx + 1, body, replacement.rstrip('\n')))
+
+          if len(changes) < 8:
+              raise SystemExit(
+                  f'Expected at least 8 PaymentHub resources.requests.cpu overrides; found {len(changes)}'
+              )
+
+          path.write_text(''.join(lines), encoding='utf-8')
+          evidence.write_text(
+              '\n'.join(
+                  [f'overrides={len(changes)}', 'target_cpu_request=25m']
+                  + [f'line {line}: {old.strip()} -> {new.strip()}' for line, old, new in changes]
+              ) + '\n',
+              encoding='utf-8',
+          )
+          PY
+
+          {
+            echo '=== PaymentHub hosted-runner CPU request override ==='
+            cat /tmp/paymenthub-cpu-override.txt
+            echo
+            echo '=== diff ==='
+            diff -u /tmp/ph_values.before.yaml "$values" || true
+          } | tee -a /tmp/paymenthub-cpu-override.txt
+
+      - name: Deploy Gazelle all stack with diagnostic capture
+        id: gazelle_deploy
+        shell: bash
+        run: |
+          set +e
+          set -o pipefail
+          sudo /tmp/mifos-gazelle/run.sh -u "$USER" -m deploy -a all 2>&1 | tee /tmp/gazelle-deploy.log
+          rc=${PIPESTATUS[0]}
+          printf '%s\n' "$rc" | tee /tmp/gazelle.exitcode
+          echo "exit_code=$rc" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Capture Gazelle and Kubernetes diagnostics
+        if: always()
+        shell: bash
+        run: |
+          set +e
+
+          {
+            echo '=== runner capacity after deploy ==='
+            nproc
+            free -h
+            df -h
+            docker system df || true
+            echo
+            echo '=== Gazelle deploy exit code ==='
+            cat /tmp/gazelle.exitcode 2>/dev/null || echo 'missing'
+          } 2>&1 | tee /tmp/runner-state.txt
+
+          {
+            echo '=== nodes ==='
+            kubectl get nodes -o wide
+            echo
+            echo '=== node describe ==='
+            kubectl describe node
+          } 2>&1 | tee /tmp/nodes.txt
+
+          {
+            echo '=== pods ==='
+            kubectl get pods -A -o wide
+            echo
+            echo '=== services ==='
+            kubectl get svc -A -o wide
+            echo
+            echo '=== ingresses ==='
+            kubectl get ingress -A -o wide
+            echo
+            echo '=== ingress classes ==='
+            kubectl get ingressclass -o wide
+            echo
+            echo '=== networking API versions ==='
+            kubectl api-versions | grep -E '^networking\.k8s\.io/' || true
+            echo
+            echo '=== ingress API resources ==='
+            kubectl api-resources | grep -i ingress || true
+          } 2>&1 | tee /tmp/cluster-state.txt
+
+          kubectl get events -A --sort-by=.lastTimestamp 2>&1 | tee /tmp/events.txt
+          kubectl get pods -A -o json 2>&1 | tee /tmp/pods.json >/dev/null
+
+          {
+            echo '=== evicted/failed pod diagnostics ==='
+            python3 - <<'PY'
+          import json
+          try:
+              with open('/tmp/pods.json', 'r', encoding='utf-8') as fh:
+                  data = json.load(fh)
+          except Exception as exc:
+              print(f'pod-json-parse-error: {exc}')
+              raise SystemExit(0)
+          for item in data.get('items', []):
+              ns = item.get('metadata', {}).get('namespace', '')
+              name = item.get('metadata', {}).get('name', '')
+              status = item.get('status', {})
+              reason = status.get('reason') or ''
+              phase = status.get('phase') or ''
+              message = status.get('message') or ''
+              if reason == 'Evicted' or phase == 'Failed':
+                  print(f'{ns}\t{name}\tphase={phase}\treason={reason}\tmessage={message}')
+          PY
+          } 2>&1 | tee /tmp/evictions.txt
+
+          while IFS=$'\t' read -r ns pod _; do
+            [ -n "$ns" ] || continue
+            [ -n "$pod" ] || continue
+            echo "=== describe pod $ns/$pod ==="
+            kubectl describe pod -n "$ns" "$pod" || true
+          done < <(awk -F '\t' '/\t/ {print $1"\t"$2}' /tmp/evictions.txt) 2>&1 | tee /tmp/evicted-pod-describes.txt
+
+          ingress_manifest=/tmp/mifos-gazelle/repos/vnext/packages/installer/manifests/apps/fspiop-api-svc-ingress.yaml
+          {
+            echo "=== target ingress manifest: $ingress_manifest ==="
+            if [ -f "$ingress_manifest" ]; then
+              cat "$ingress_manifest"
+              echo
+              echo '=== server-side dry-run ==='
+              kubectl apply --dry-run=server -f "$ingress_manifest" -n vnext
+              dry_rc=$?
+              echo "dry_run_exit_code=$dry_rc"
+              echo
+              echo '=== client-side dry-run ==='
+              kubectl apply --dry-run=client -f "$ingress_manifest" -n vnext
+              client_rc=$?
+              echo "client_dry_run_exit_code=$client_rc"
+              echo
+              echo '=== existing resource, if any ==='
+              kubectl get -f "$ingress_manifest" -n vnext -o yaml || true
+              echo
+              echo '=== describe resource, if any ==='
+              kubectl describe -f "$ingress_manifest" -n vnext || true
+            else
+              echo 'manifest missing'
+            fi
+          } 2>&1 | tee /tmp/ingress-diagnostic.txt
+
+      - name: Fail closed unless Gazelle/Mifos/PaymentHub/Mojaloop workloads are healthy
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          rc="$(cat /tmp/gazelle.exitcode 2>/dev/null || printf '999')"
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::Gazelle deploy failed with exit code $rc. See gazelle-deploy.log and ingress/Kubernetes diagnostics."
+            exit "$rc"
+          fi
+
+          : > /tmp/readiness.txt
+          deadline=$((SECONDS + 600))
+          while true; do
+            kubectl get pods -A -o json > /tmp/pods-readiness.json
+            readiness="$(python3 - <<'PY'
+          import json
+          import re
+
+          with open('/tmp/pods-readiness.json', 'r', encoding='utf-8') as fh:
+              data = json.load(fh)
+
+          failed = []
+          active = []
+          ready_active = []
+          nonready = []
+
+          for item in data.get('items', []):
+              metadata = item.get('metadata', {})
+              status = item.get('status', {})
+              ns = metadata.get('namespace', '')
+              name = metadata.get('name', '')
+              ident = f'{ns}/{name}'
+              phase = status.get('phase') or 'Unknown'
+              reason = status.get('reason') or ''
+
+              # Successful Job/hook pods are valid terminal outcomes, not live
+              # workloads that can ever satisfy the Ready condition.
+              if phase == 'Succeeded':
+                  continue
+
+              if phase == 'Failed':
+                  failed.append(f'{ident}:phase={phase}:reason={reason}')
+                  continue
+
+              active.append(ident)
+              conditions = status.get('conditions') or []
+              is_ready = any(
+                  c.get('type') == 'Ready' and c.get('status') == 'True'
+                  for c in conditions
+              )
+              if is_ready:
+                  ready_active.append((ns, name))
+                  continue
+
+              waits = []
+              for cs in (status.get('initContainerStatuses') or []) + (status.get('containerStatuses') or []):
+                  state = cs.get('state') or {}
+                  waiting = state.get('waiting') or {}
+                  terminated = state.get('terminated') or {}
+                  if waiting.get('reason'):
+                      waits.append(f"{cs.get('name','?')}={waiting.get('reason')}")
+                  elif terminated.get('reason') and terminated.get('exitCode') not in (None, 0):
+                      waits.append(f"{cs.get('name','?')}={terminated.get('reason')}({terminated.get('exitCode')})")
+              detail = ','.join(waits) if waits else f'phase={phase}:reason={reason}'
+              nonready.append(f'{ident}:{detail}')
+
+          def namespace_has(namespace, pattern):
+              return any(
+                  ns == namespace and re.search(pattern, name, re.I)
+                  for ns, name in ready_active
+              )
+
+          required = {
+              # Gazelle's pinned config deploys these families into distinct
+              # namespaces. Namespace-scoping prevents similarly named bridge
+              # connectors from satisfying another family's proof.
+              'mifos-fineract': namespace_has('mifosx', r'fineract|mifos'),
+              'paymenthub': namespace_has('paymenthub', r'ph-ee|phee|paymenthub'),
+              # Require multiple independent Mojaloop vNext services. In
+              # particular, paymenthub/ph-ee-connector-mojaloop cannot satisfy
+              # any of these predicates.
+              'mojaloop-vnext-fspiop': namespace_has('vnext', r'^fspiop-api-svc(?:-|$)'),
+              'mojaloop-vnext-quoting': namespace_has('vnext', r'^quoting-svc(?:-|$)'),
+              'mojaloop-vnext-participants': namespace_has('vnext', r'^participants-svc(?:-|$)'),
+          }
+          missing = [label for label, present in required.items() if not present]
+
+          for entry in failed:
+              print(f'FAIL_FAILED_POD={entry}')
+          for entry in nonready[:50]:
+              print(f'NONREADY={entry}')
+          if len(nonready) > 50:
+              print(f'NONREADY_TRUNCATED={len(nonready) - 50}')
+          print(f'ACTIVE={len(active)}')
+          print(f'READY_ACTIVE={len(ready_active)}')
+          print('MISSING_REQUIRED=' + ','.join(missing))
+          print('READY=1' if active and not failed and not nonready and not missing else 'READY=0')
+          PY
+          )"
+
+            {
+              date -u +'%Y-%m-%dT%H:%M:%SZ'
+              printf '%s\n' "$readiness"
+            } | tee -a /tmp/readiness.txt
+
+            if grep -q '^FAIL_FAILED_POD=' <<<"$readiness"; then
+              echo "::error::At least one Kubernetes pod is Failed; refusing to mark Gazelle healthy."
+              kubectl get pods -A -o wide | tee -a /tmp/readiness.txt
+              kubectl get events -A --sort-by=.lastTimestamp | tail -n 200 | tee -a /tmp/readiness.txt || true
+              exit 1
+            fi
+
+            if grep -q '^READY=1$' <<<"$readiness"; then
+              break
+            fi
+
+            if (( SECONDS >= deadline )); then
+              echo "::error::Gazelle active workloads did not become Ready, or required live component evidence is missing, within 600 seconds."
+              kubectl get pods -A -o wide | tee -a /tmp/readiness.txt
+              kubectl get events -A --sort-by=.lastTimestamp | tail -n 200 | tee -a /tmp/readiness.txt || true
+              cp /tmp/pods-readiness.json /tmp/pods.json
+              exit 1
+            fi
+
+            sleep 10
+          done
+
+          kubectl get pods -A --no-headers | tee /tmp/pods.txt
+          cp /tmp/pods-readiness.json /tmp/pods.json
+          echo 'Gazelle health gate passed: every active pod is Ready, terminal Succeeded pods were accepted, no Failed pod exists, and namespace-scoped live Ready evidence exists for Mifos/Fineract, PaymentHub, and multiple Mojaloop vNext services.' | tee -a /tmp/readiness.txt
+
+      - name: Upload evidence
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: musitu-gazelle-evidence
+          path: |
+            /tmp/gazelle.sha
+            /tmp/gazelle.exitcode
+            /tmp/gazelle-deploy.log
+            /tmp/paymenthub-cpu-override.txt
+            /tmp/runner-state.txt
+            /tmp/nodes.txt
+            /tmp/cluster-state.txt
+            /tmp/events.txt
+            /tmp/pods.json
+            /tmp/evictions.txt
+            /tmp/evicted-pod-describes.txt
+            /tmp/ingress-diagnostic.txt
+            /tmp/readiness.txt
+            /tmp/pods.txt
