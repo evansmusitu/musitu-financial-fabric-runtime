@@ -1,0 +1,11 @@
+{
+  "schema": 2,
+  "system": "MUSITU Financial Fabric",
+  "mode": "sandbox-integration",
+  "source_commit": "e1467f7e20ef5002b7235b279458664fd5c05cd5",
+  "all_required": true,
+  "components": [
+    "TigerBeetle","Hyperswitch","Mojaloop","Mifos Payment Hub EE","Mifos Gazelle","Apache Fineract","Tazama","Moov Watchman","Kill Bill","Hyperswitch Card Vault","Keycloak","OpenFGA","Open Policy Agent","SPIFFE/SPIRE","OpenBao","Temporal","NATS","PostgreSQL","ClickHouse","Valkey","OpenSearch","Envoy","Coraza","OpenTelemetry","Sigstore/Cosign","OpenTofu","OpenAPI Generator","Prism","GSMA Mobile Money API","ISO 20022","Open Payments","Rafiki","Machine Payments Protocol","x402","Stripe OpenAPI Compatibility","Stellar Anchor Platform","Circle CCTP Adapter","MOSIP Compatibility","MUSITU Offline Value"
+  ],
+  "promotion_rule": "No runtime is complete until its real health/integration gate passes. Production money movement remains disabled on this branch."
+}
