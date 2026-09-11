@@ -43,7 +43,7 @@ async def _introspect(token: str) -> dict:
     return payload
 
 
-async def _authorize(principal: dict, request: Request) -> dict:
+async def _authorize(principal: dict, request: Request, *, resource: dict | None = None) -> dict:
     if not settings.authz_gate_url:
         raise ValueError("authorization gate unconfigured")
     subject = str(principal.get("sub") or principal.get("client_id")).strip()
@@ -56,6 +56,10 @@ async def _authorize(principal: dict, request: Request) -> dict:
         "path": request.url.path,
         "required_engines": ["openfga", "opa"],
     }
+    if resource is not None:
+        if not isinstance(resource, dict) or not resource:
+            raise ValueError("resource authorization context is empty")
+        payload["resource"] = resource
     async with httpx.AsyncClient(timeout=5.0) as client:
         response = await client.post(settings.authz_gate_url, json=payload, headers=headers)
         response.raise_for_status()
@@ -68,6 +72,15 @@ async def _authorize(principal: dict, request: Request) -> dict:
     if not str(decision.get("decision_id") or "").strip():
         raise PermissionError("authorization decision id missing")
     return decision
+
+
+async def authorize_resource(request: Request, resource: dict) -> dict:
+    if not settings.is_production:
+        return {"allow": True, "decision_id": "sandbox", "engines": ["sandbox"]}
+    principal = getattr(request.state, "principal", None)
+    if not isinstance(principal, dict) or not str(principal.get("sub") or principal.get("client_id") or "").strip():
+        raise PermissionError("authenticated principal unavailable")
+    return await _authorize(principal, request, resource=resource)
 
 
 async def _production_ecocash_webhook(request: Request, call_next):

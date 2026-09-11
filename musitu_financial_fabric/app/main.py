@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from .audit import verify_audit_chain
-from .auth import production_auth_middleware
+from .auth import authorize_resource, production_auth_middleware
 from .component_registry import component_manifest, probe_components
 from .config import settings
 from .db import init_db
@@ -126,6 +126,15 @@ async def _readiness_snapshot() -> dict:
     }
 
 
+async def _require_resource_authorization(request: Request, resource: dict) -> dict:
+    try:
+        return await authorize_resource(request, resource)
+    except PermissionError as exc:
+        raise HTTPException(403, "production resource authorization denied") from exc
+    except Exception as exc:
+        raise HTTPException(503, "production resource authorization unavailable") from exc
+
+
 @app.get("/health")
 def health():
     return {
@@ -156,7 +165,8 @@ async def fabric_readiness():
 
 
 @app.post("/v1/identities")
-def identity_create(payload: IdentityCreate):
+async def identity_create(payload: IdentityCreate, request: Request):
+    await _require_resource_authorization(request, {"type": "identity", "action": "create", "kind": payload.kind})
     try:
         return create_identity(payload.kind, payload.display_name)
     except PaymentError as exc:
@@ -164,7 +174,17 @@ def identity_create(payload: IdentityCreate):
 
 
 @app.post("/v1/agent-mandates")
-def mandate_create(payload: MandateCreate):
+async def mandate_create(payload: MandateCreate, request: Request):
+    await _require_resource_authorization(request, {
+        "type": "agent_mandate",
+        "action": "create",
+        "principal_id": payload.principal_id,
+        "agent_id": payload.agent_id,
+        "currency": payload.currency.upper(),
+        "allowed_rails": sorted({rail.lower() for rail in payload.allowed_rails}),
+        "max_per_payment_minor": payload.max_per_payment_minor,
+        "max_daily_minor": payload.max_daily_minor,
+    })
     try:
         return create_agent_mandate(**payload.model_dump())
     except PaymentError as exc:
@@ -172,7 +192,8 @@ def mandate_create(payload: MandateCreate):
 
 
 @app.get("/v1/agent-mandates/{mandate_id}")
-def mandate_get(mandate_id: str):
+async def mandate_get(mandate_id: str, request: Request):
+    await _require_resource_authorization(request, {"type": "agent_mandate", "id": mandate_id, "action": "read"})
     data = get_agent_mandate(mandate_id)
     if not data:
         raise HTTPException(404, "mandate not found")
@@ -180,16 +201,22 @@ def mandate_get(mandate_id: str):
 
 
 @app.post("/v1/merchants")
-def merchant_create(payload: MerchantCreate):
+async def merchant_create(payload: MerchantCreate, request: Request):
+    await _require_resource_authorization(request, {"type": "merchant", "action": "create", "currency": payload.currency.upper()})
     return create_merchant(payload.name, payload.currency)
 
 
 @app.post("/v1/merchants/{merchant_id}/review")
-def merchant_review(merchant_id: str, payload: MerchantReview, request: Request):
+async def merchant_review(merchant_id: str, payload: MerchantReview, request: Request):
+    resource_decision = await _require_resource_authorization(request, {
+        "type": "merchant",
+        "id": merchant_id,
+        "action": "review",
+        "target_status": payload.status.lower(),
+    })
     principal = getattr(request.state, "principal", {}) or {}
-    authorization = getattr(request.state, "authorization_decision", {}) or {}
     actor = str(principal.get("sub") or principal.get("client_id") or ("sandbox" if not settings.is_production else "")).strip()
-    decision_id = str(authorization.get("decision_id") or ("sandbox" if not settings.is_production else "")).strip()
+    decision_id = str(resource_decision.get("decision_id") or ("sandbox" if not settings.is_production else "")).strip()
     try:
         return review_merchant(
             merchant_id=merchant_id,
@@ -203,7 +230,8 @@ def merchant_review(merchant_id: str, payload: MerchantReview, request: Request)
 
 
 @app.get("/v1/accounts/{account_id}")
-def account_get(account_id: str):
+async def account_get(account_id: str, request: Request):
+    await _require_resource_authorization(request, {"type": "account", "id": account_id, "action": "read"})
     account = get_account(account_id)
     if not account:
         raise HTTPException(404, "account not found")
@@ -212,7 +240,16 @@ def account_get(account_id: str):
 
 
 @app.post("/v1/payments/intents")
-async def payment_create(payload: PaymentCreate, idempotency_key: str = Header(alias="Idempotency-Key")):
+async def payment_create(payload: PaymentCreate, request: Request, idempotency_key: str = Header(alias="Idempotency-Key")):
+    await _require_resource_authorization(request, {
+        "type": "payment_intent",
+        "action": "create",
+        "merchant_id": payload.merchant_id,
+        "destination_account_id": payload.destination_account_id,
+        "amount_minor": payload.amount_minor,
+        "currency": payload.currency.upper(),
+        "rail": payload.rail.lower(),
+    })
     try:
         payment = await create_payment_intent(merchant_id=payload.merchant_id, destination_account_id=payload.destination_account_id, amount_minor=payload.amount_minor, currency=payload.currency, rail=payload.rail, payer_ref=payload.payer_ref, description=payload.description, idempotency_key=idempotency_key, callback_url=payload.callback_url)
     except PaymentError as exc:
@@ -222,7 +259,17 @@ async def payment_create(payload: PaymentCreate, idempotency_key: str = Header(a
 
 
 @app.post("/v1/agent-payments")
-async def agent_payment_create(payload: AgentPaymentCreate, idempotency_key: str = Header(alias="Idempotency-Key")):
+async def agent_payment_create(payload: AgentPaymentCreate, request: Request, idempotency_key: str = Header(alias="Idempotency-Key")):
+    await _require_resource_authorization(request, {
+        "type": "agent_payment",
+        "action": "create",
+        "mandate_id": payload.mandate_id,
+        "merchant_id": payload.merchant_id,
+        "destination_account_id": payload.destination_account_id,
+        "amount_minor": payload.amount_minor,
+        "currency": payload.currency.upper(),
+        "rail": payload.rail.lower(),
+    })
     try:
         return await create_agent_payment(**payload.model_dump(), idempotency_key=idempotency_key)
     except PaymentError as exc:
@@ -230,14 +277,24 @@ async def agent_payment_create(payload: AgentPaymentCreate, idempotency_key: str
 
 
 @app.get("/v1/payments/{payment_id}")
-def payment_get(payment_id: str):
+async def payment_get(payment_id: str, request: Request):
+    await _require_resource_authorization(request, {"type": "payment", "id": payment_id, "action": "read"})
     payment = get_payment(payment_id)
     if not payment:
         raise HTTPException(404, "payment not found")
     return payment
 
 
-async def _normalized_payment(envelope: ProtocolPaymentEnvelope, intent, idempotency_key: str):
+async def _normalized_payment(request: Request, envelope: ProtocolPaymentEnvelope, intent, idempotency_key: str):
+    await _require_resource_authorization(request, {
+        "type": "payment_intent",
+        "action": "create",
+        "merchant_id": envelope.merchant_id,
+        "destination_account_id": envelope.destination_account_id,
+        "amount_minor": int(intent.amount_minor),
+        "currency": str(intent.currency).upper(),
+        "rail": envelope.rail.lower(),
+    })
     try:
         return await create_payment_intent(merchant_id=envelope.merchant_id, destination_account_id=envelope.destination_account_id, amount_minor=intent.amount_minor, currency=intent.currency, rail=envelope.rail, payer_ref=intent.payer_ref, description=intent.description, idempotency_key=idempotency_key)
     except (PaymentError, ValueError, KeyError) as exc:
@@ -245,32 +302,32 @@ async def _normalized_payment(envelope: ProtocolPaymentEnvelope, intent, idempot
 
 
 @app.post("/compat/stripe/v1/payment_intents")
-async def stripe_compat_payment(envelope: ProtocolPaymentEnvelope, idempotency_key: str = Header(alias="Idempotency-Key")):
+async def stripe_compat_payment(envelope: ProtocolPaymentEnvelope, request: Request, idempotency_key: str = Header(alias="Idempotency-Key")):
     try:
         intent = stripe_payment_intent(envelope.payload)
     except Exception as exc:
         raise HTTPException(400, f"invalid Stripe-compatible payload: {exc}") from exc
-    payment = await _normalized_payment(envelope, intent, idempotency_key)
+    payment = await _normalized_payment(request, envelope, intent, idempotency_key)
     return {"id": payment["id"], "object": "payment_intent", "amount": payment["amount_minor"], "currency": payment["currency"].lower(), "status": "processing" if payment["status"] == "pending" else payment["status"], "musitu_rail": payment["rail"]}
 
 
 @app.post("/open-payments/incoming-payments")
-async def open_payments_create(envelope: ProtocolPaymentEnvelope, idempotency_key: str = Header(alias="Idempotency-Key")):
+async def open_payments_create(envelope: ProtocolPaymentEnvelope, request: Request, idempotency_key: str = Header(alias="Idempotency-Key")):
     try:
         intent = open_payments_incoming(envelope.payload)
     except Exception as exc:
         raise HTTPException(400, f"invalid Open Payments payload: {exc}") from exc
-    payment = await _normalized_payment(envelope, intent, idempotency_key)
+    payment = await _normalized_payment(request, envelope, intent, idempotency_key)
     return {"id": payment["id"], "incomingAmount": {"value": str(payment["amount_minor"]), "assetCode": payment["currency"], "assetScale": 2}, "completed": payment["status"] == "succeeded"}
 
 
 @app.post("/gsma/mmapi/transactions")
-async def gsma_mmapi_create(envelope: ProtocolPaymentEnvelope, idempotency_key: str = Header(alias="Idempotency-Key")):
+async def gsma_mmapi_create(envelope: ProtocolPaymentEnvelope, request: Request, idempotency_key: str = Header(alias="Idempotency-Key")):
     try:
         intent = gsma_transaction(envelope.payload)
     except Exception as exc:
         raise HTTPException(400, f"invalid GSMA MMAPI payload: {exc}") from exc
-    payment = await _normalized_payment(envelope, intent, idempotency_key)
+    payment = await _normalized_payment(request, envelope, intent, idempotency_key)
     return {"transactionReference": payment["id"], "transactionStatus": "Pending" if payment["status"] == "pending" else payment["status"].title()}
 
 
@@ -280,7 +337,7 @@ async def iso20022_create(request: Request, merchant_id: str, destination_accoun
     try:
         intent = iso20022_pacs008(body)
         envelope = ProtocolPaymentEnvelope(merchant_id=merchant_id, destination_account_id=destination_account_id, payload={}, rail=rail)
-        payment = await _normalized_payment(envelope, intent, idempotency_key)
+        payment = await _normalized_payment(request, envelope, intent, idempotency_key)
     except HTTPException:
         raise
     except Exception as exc:
