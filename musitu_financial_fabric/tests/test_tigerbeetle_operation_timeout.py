@@ -52,15 +52,22 @@ def test_worker_timeout_maps_to_fail_closed_ledger_error(monkeypatch):
         ledger._tb_worker_request({"operation": "lookup_accounts", "ids": [1]})
 
 
-def test_invalid_production_timeout_fails_before_worker_launch(monkeypatch):
-    monkeypatch.setattr(ledger, "settings", _production_settings(tigerbeetle_operation_timeout_seconds=0))
+def test_invalid_production_timeout_fails_at_configuration_boundary():
+    with pytest.raises(ValueError, match="between 1 and 30 seconds"):
+        _production_settings(tigerbeetle_operation_timeout_seconds=0)
+    with pytest.raises(ValueError, match="between 1 and 30 seconds"):
+        _production_settings(tigerbeetle_operation_timeout_seconds=31)
 
-    def must_not_run(*args, **kwargs):
-        raise AssertionError("worker should not launch with an invalid production timeout")
 
-    monkeypatch.setattr(ledger.subprocess, "run", must_not_run)
-    with pytest.raises(ledger.LedgerError, match="between 1 and 30 seconds"):
-        ledger._tb_worker_request({"operation": "lookup_accounts", "ids": [1]})
+def test_non_deployment_test_topology_does_not_gain_config_side_effect():
+    cfg = Settings(
+        environment="production",
+        metadata_db_url="",
+        ledger_backend="tigerbeetle",
+        tigerbeetle_addresses="127.0.0.1:3000",
+        tigerbeetle_operation_timeout_seconds=0,
+    )
+    assert cfg.tigerbeetle_operation_timeout_seconds == 0
 
 
 def test_worker_failure_is_fail_closed(monkeypatch):
