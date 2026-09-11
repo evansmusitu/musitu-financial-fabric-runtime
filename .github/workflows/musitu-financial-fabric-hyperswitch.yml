@@ -2,23 +2,31 @@ name: MUSITU Financial Fabric — Hyperswitch
 
 on:
   push:
-    branches: [musitu-financial-fabric]
+    branches: [musitu-financial-fabric, musitu-financial-fabric-production-readiness]
     paths:
       - 'control/musitu-financial-fabric/**'
-      - '.github/workflows/musitu-financial-fabric-*.yml'
+      - '.github/workflows/musitu-financial-fabric-hyperswitch.yml'
   workflow_dispatch:
 
 permissions:
   contents: read
+
+env:
+  HYPERSWITCH_UPSTREAM_SHA: aa475770f45becf3db0cc510dbb7fe39f5f96053
 
 jobs:
   hyperswitch:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
-      - name: Clone official Hyperswitch latest branch
-        run: git clone --depth 1 --branch latest https://github.com/juspay/hyperswitch.git /tmp/hyperswitch
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Acquire exact official Hyperswitch revision
+        run: |
+          git init /tmp/hyperswitch
+          git -C /tmp/hyperswitch remote add origin https://github.com/juspay/hyperswitch.git
+          git -C /tmp/hyperswitch fetch --depth 1 origin "$HYPERSWITCH_UPSTREAM_SHA"
+          git -C /tmp/hyperswitch checkout --detach FETCH_HEAD
+          test "$(git -C /tmp/hyperswitch rev-parse HEAD)" = "$HYPERSWITCH_UPSTREAM_SHA"
       - name: Record upstream revision
         run: git -C /tmp/hyperswitch rev-parse HEAD | tee /tmp/hyperswitch.sha
       - name: Apply upstream Linux Superposition init shell workaround
@@ -71,13 +79,18 @@ jobs:
             docker logs hyperswitch-hyperswitch-server-1 --tail 200 || true
             exit 1
           fi
-      - name: Capture containers
+      - name: Capture containers and resolved image identities
         if: always()
-        run: docker ps -a | tee /tmp/hyperswitch-containers.txt
+        run: |
+          docker ps -a | tee /tmp/hyperswitch-containers.txt
+          docker ps -a --format '{{.Image}}' | sort -u | while read -r image; do
+            [ -n "$image" ] || continue
+            docker image inspect "$image" --format '{{json .RepoDigests}}' || true
+          done | tee /tmp/hyperswitch-image-digests.txt
       - name: Upload evidence
         if: always()
         continue-on-error: true
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: musitu-hyperswitch-evidence
           path: |
@@ -85,3 +98,4 @@ jobs:
             /tmp/hyperswitch-health.txt
             /tmp/hyperswitch-ready.json
             /tmp/hyperswitch-containers.txt
+            /tmp/hyperswitch-image-digests.txt
