@@ -2,7 +2,7 @@ name: MUSITU Financial Fabric — Interoperability Runtimes
 
 on:
   push:
-    branches: [musitu-financial-fabric]
+    branches: [musitu-financial-fabric, musitu-financial-fabric-production-readiness]
     paths:
       - 'control/musitu-financial-fabric/**'
       - '.github/workflows/musitu-financial-fabric-interop.yml'
@@ -11,20 +11,51 @@ on:
 permissions:
   contents: read
 
+env:
+  CARD_VAULT_UPSTREAM_SHA: 132ac81cfe8a87934643cc4069dd015b7b114a1d
+  RAFIKI_UPSTREAM_SHA: b3387c66ee9b991e2f4b9f04ef57e9c86b9313c8
+  STELLAR_ANCHOR_UPSTREAM_SHA: 129d0acdab20758c37e9869e84d64373b6b928aa
+  MUSITU_POSTGRES_CI_IMAGE: postgres@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685
+  MUSITU_REDIS_CI_IMAGE: redis@sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf
+  CARD_VAULT_RUST_BASE: rust@sha256:3b05f7c617a200c41c3506097f0d15fc193a1c93bfd8f141007b47cac8f95d3c
+  CARD_VAULT_DEBIAN_BASE: debian@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132
+
 jobs:
   card-vault:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
-      - name: Clone official Hyperswitch Card Vault
-        run: git clone --depth 1 https://github.com/juspay/hyperswitch-card-vault.git /tmp/card-vault
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Acquire exact official Hyperswitch Card Vault revision
+        run: |
+          git init /tmp/card-vault
+          git -C /tmp/card-vault remote add origin https://github.com/juspay/hyperswitch-card-vault.git
+          git -C /tmp/card-vault fetch --depth 1 origin "$CARD_VAULT_UPSTREAM_SHA"
+          git -C /tmp/card-vault checkout --detach FETCH_HEAD
+          test "$(git -C /tmp/card-vault rev-parse HEAD)" = "$CARD_VAULT_UPSTREAM_SHA"
       - name: Record upstream revision
         run: git -C /tmp/card-vault rev-parse HEAD | tee /tmp/card-vault.sha
+      - name: Pin Card Vault build bases to immutable digests
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          path = Path('/tmp/card-vault/Dockerfile')
+          text = path.read_text()
+          replacements = {
+              'FROM rust:slim-trixie AS builder': f"FROM {os.environ['CARD_VAULT_RUST_BASE']} AS builder",
+              'FROM debian:trixie-slim': f"FROM {os.environ['CARD_VAULT_DEBIAN_BASE']}",
+          }
+          for old, new in replacements.items():
+              if old not in text:
+                  raise SystemExit(f'Card Vault Dockerfile signature changed: {old}')
+              text = text.replace(old, new, 1)
+          path.write_text(text)
+          PY
       - name: Start database and Redis
         run: |
-          docker run -d --name musitu-vault-pg -e POSTGRES_USER=db_user -e POSTGRES_PASSWORD=db_pass -e POSTGRES_DB=locker -p 5432:5432 postgres:16-alpine
-          docker run -d --name musitu-vault-redis -p 6379:6379 redis:7-alpine
+          docker run -d --name musitu-vault-pg -e POSTGRES_USER=db_user -e POSTGRES_PASSWORD=db_pass -e POSTGRES_DB=locker -p 5432:5432 "$MUSITU_POSTGRES_CI_IMAGE"
+          docker run -d --name musitu-vault-redis -p 6379:6379 "$MUSITU_REDIS_CI_IMAGE"
           for i in {1..60}; do docker exec musitu-vault-pg pg_isready -U db_user -d locker && break || sleep 1; done
           docker exec musitu-vault-redis redis-cli ping | grep -q PONG
       - name: Apply Card Vault migrations
@@ -32,7 +63,7 @@ jobs:
           for f in /tmp/card-vault/migrations/*/up.sql; do
             docker exec -i musitu-vault-pg psql -v ON_ERROR_STOP=1 -U db_user -d locker < "$f"
           done
-      - name: Build official Card Vault release image
+      - name: Build official Card Vault release image from pinned bases
         working-directory: /tmp/card-vault
         run: docker build --build-arg DEV=false -t musitu-card-vault:ci .
       - name: Start Card Vault
@@ -50,36 +81,49 @@ jobs:
             sleep 1
           done
           if [ "$ok" != 1 ]; then
-            echo '=== Card Vault container state ==='
             docker ps -a --filter name=musitu-card-vault
             docker inspect -f 'status={{.State.Status}} exit={{.State.ExitCode}} error={{.State.Error}} finished={{.State.FinishedAt}}' musitu-card-vault || true
-            echo '=== Card Vault logs ==='
             docker logs musitu-card-vault 2>&1 | tee /tmp/card-vault-container.log || true
             exit 1
           fi
           cat /tmp/card-vault-health.json
           grep -qi 'health is good' /tmp/card-vault-health.json
+      - name: Capture image identities
+        if: always()
+        run: |
+          docker image inspect "$MUSITU_POSTGRES_CI_IMAGE" --format '{{json .RepoDigests}}' | tee /tmp/card-vault-postgres-digests.txt || true
+          docker image inspect "$MUSITU_REDIS_CI_IMAGE" --format '{{json .RepoDigests}}' | tee /tmp/card-vault-redis-digests.txt || true
+          docker image inspect musitu-card-vault:ci --format 'id={{.Id}}' | tee /tmp/card-vault-built-image.txt || true
       - name: Upload evidence
         if: always()
         continue-on-error: true
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: musitu-card-vault-evidence
           path: |
             /tmp/card-vault.sha
             /tmp/card-vault-health.json
             /tmp/card-vault-container.log
+            /tmp/card-vault-postgres-digests.txt
+            /tmp/card-vault-redis-digests.txt
+            /tmp/card-vault-built-image.txt
 
   rafiki:
     runs-on: ubuntu-24.04
     timeout-minutes: 70
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '24'
-      - name: Clone official Rafiki with Open Payments specs
-        run: git clone --depth 1 --recurse-submodules https://github.com/interledger/rafiki.git /tmp/rafiki
+      - name: Acquire exact official Rafiki revision with submodules
+        run: |
+          git init /tmp/rafiki
+          git -C /tmp/rafiki remote add origin https://github.com/interledger/rafiki.git
+          git -C /tmp/rafiki fetch --depth 1 origin "$RAFIKI_UPSTREAM_SHA"
+          git -C /tmp/rafiki checkout --detach FETCH_HEAD
+          test "$(git -C /tmp/rafiki rev-parse HEAD)" = "$RAFIKI_UPSTREAM_SHA"
+          git -C /tmp/rafiki submodule update --init --recursive --depth 1
       - name: Record upstream revision
         run: git -C /tmp/rafiki rev-parse HEAD | tee /tmp/rafiki.sha
       - name: Install exact Rafiki workspace dependencies
@@ -99,11 +143,8 @@ jobs:
           docker inspect rafiki-cloud-nine-backend-1 > /tmp/rafiki-cloud-nine-backend-inspect.json 2>/dev/null || true
           docker logs rafiki-cloud-nine-backend-1 > /tmp/rafiki-cloud-nine-backend.log 2>&1 || true
           if [ "$rc" -ne 0 ]; then
-            echo '=== Rafiki compose state ==='
             cat /tmp/rafiki-compose-ps.txt || true
-            echo '=== Cloud Nine backend health ==='
             docker inspect -f '{{json .State.Health}}' rafiki-cloud-nine-backend-1 || true
-            echo '=== Cloud Nine backend logs ==='
             cat /tmp/rafiki-cloud-nine-backend.log || true
             exit "$rc"
           fi
@@ -120,10 +161,18 @@ jobs:
           done
           docker ps --format '{{.Names}} {{.Status}}' | tee /tmp/rafiki-containers.txt
           test "$(grep -ci rafiki /tmp/rafiki-containers.txt)" -gt 0
+      - name: Capture resolved runtime image identities
+        if: always()
+        run: |
+          docker ps -a --format '{{.Image}}' | sort -u | while read -r image; do
+            [ -n "$image" ] || continue
+            printf '%s ' "$image"
+            docker image inspect "$image" --format '{{json .RepoDigests}}' || true
+          done | tee /tmp/rafiki-image-digests.txt
       - name: Upload evidence
         if: always()
         continue-on-error: true
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: musitu-rafiki-evidence
           path: |
@@ -132,14 +181,20 @@ jobs:
             /tmp/rafiki-compose-ps.txt
             /tmp/rafiki-cloud-nine-backend-inspect.json
             /tmp/rafiki-cloud-nine-backend.log
+            /tmp/rafiki-image-digests.txt
 
   stellar-anchor:
     runs-on: ubuntu-24.04
     timeout-minutes: 50
     steps:
-      - uses: actions/checkout@v4
-      - name: Clone official Stellar Anchor Platform
-        run: git clone --depth 1 https://github.com/stellar/anchor-platform.git /tmp/anchor-platform
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Acquire exact official Stellar Anchor Platform revision
+        run: |
+          git init /tmp/anchor-platform
+          git -C /tmp/anchor-platform remote add origin https://github.com/stellar/anchor-platform.git
+          git -C /tmp/anchor-platform fetch --depth 1 origin "$STELLAR_ANCHOR_UPSTREAM_SHA"
+          git -C /tmp/anchor-platform checkout --detach FETCH_HEAD
+          test "$(git -C /tmp/anchor-platform rev-parse HEAD)" = "$STELLAR_ANCHOR_UPSTREAM_SHA"
       - name: Record upstream revision
         run: git -C /tmp/anchor-platform rev-parse HEAD | tee /tmp/stellar-anchor.sha
       - name: Install pinned Stellar CLI
@@ -173,13 +228,22 @@ jobs:
           grep -Eq 'NETWORK_PASSPHRASE|SIGNING_KEY|TRANSFER_SERVER' /tmp/stellar.toml
           docker compose ps | tee /tmp/stellar-containers.txt
           docker compose ps --status running platform | grep -q platform
+      - name: Capture resolved runtime image identities
+        if: always()
+        run: |
+          docker ps -a --format '{{.Image}}' | sort -u | while read -r image; do
+            [ -n "$image" ] || continue
+            printf '%s ' "$image"
+            docker image inspect "$image" --format '{{json .RepoDigests}}' || true
+          done | tee /tmp/stellar-image-digests.txt
       - name: Upload evidence
         if: always()
         continue-on-error: true
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: musitu-stellar-anchor-evidence
           path: |
             /tmp/stellar-anchor.sha
             /tmp/stellar.toml
             /tmp/stellar-containers.txt
+            /tmp/stellar-image-digests.txt
