@@ -28,6 +28,16 @@ async def _introspect(token: str) -> dict:
     scopes = set(str(payload.get("scope", "")).split())
     if required_scope and required_scope not in scopes:
         raise ValueError("required scope missing")
+    required_audience = settings.expected_auth_audience.strip()
+    audience_value = payload.get("aud")
+    if isinstance(audience_value, str):
+        audiences = {audience_value.strip()} if audience_value.strip() else set()
+    elif isinstance(audience_value, (list, tuple, set)):
+        audiences = {str(value).strip() for value in audience_value if str(value).strip()}
+    else:
+        audiences = set()
+    if not required_audience or required_audience not in audiences:
+        raise ValueError("required audience missing")
     if not str(payload.get("sub") or payload.get("client_id") or "").strip():
         raise ValueError("token subject missing")
     return payload

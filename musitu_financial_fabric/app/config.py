@@ -48,6 +48,7 @@ class Settings:
     auth_client_id: str = field(default_factory=lambda: _str("MUSITU_AUTH_CLIENT_ID"))
     auth_client_secret: str = field(default_factory=lambda: _str("MUSITU_AUTH_CLIENT_SECRET"))
     auth_required_scope: str = field(default_factory=lambda: _str("MUSITU_AUTH_REQUIRED_SCOPE", "musitu.payments"))
+    auth_expected_audience: str = field(default_factory=lambda: _str("MUSITU_AUTH_EXPECTED_AUDIENCE"))
     authz_gate_url: str = field(default_factory=lambda: _str("MUSITU_AUTHZ_GATE_URL"))
     authz_gate_token: str = field(default_factory=lambda: _str("MUSITU_AUTHZ_GATE_TOKEN"))
 
@@ -72,6 +73,10 @@ class Settings:
     @property
     def uses_postgres(self) -> bool:
         return self.metadata_db_url.startswith(("postgresql://", "postgres://"))
+
+    @property
+    def expected_auth_audience(self) -> str:
+        return self.auth_expected_audience or self.auth_client_id
 
 
 settings = Settings()
