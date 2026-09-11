@@ -99,14 +99,32 @@ def _audit_readiness() -> dict:
         return {"valid": False, "events": None, "broken_at": None, "error": type(exc).__name__}
 
 
+def _metadata_reconciliation_readiness() -> dict:
+    try:
+        result = reconcile()
+        dangling = int(result.get("succeeded_without_journal", 0))
+        consistent = bool(result.get("balanced", False) and dangling == 0)
+        return {**result, "consistent": consistent}
+    except Exception as exc:
+        return {
+            "balanced": False,
+            "consistent": False,
+            "succeeded_without_journal": None,
+            "provider_attention_required": None,
+            "error": type(exc).__name__,
+        }
+
+
 async def _readiness_snapshot() -> dict:
     components = await probe_components()
     audit = _audit_readiness()
+    metadata_reconciliation = _metadata_reconciliation_readiness()
     monetary_truth = reconcile_monetary_truth()
     production = production_readiness() if settings.is_production else {"ready_for_live_funds": False, "checks": []}
     service_ready = bool(
         components["all_required_runtime_healthy"]
         and audit["valid"]
+        and metadata_reconciliation["consistent"]
         and monetary_truth["consistent"]
     )
     live_funds_ready = bool(
@@ -118,6 +136,7 @@ async def _readiness_snapshot() -> dict:
     return {
         **components,
         "audit": audit,
+        "metadata_reconciliation": metadata_reconciliation,
         "monetary_truth": monetary_truth,
         "service_ready": service_ready,
         "sandbox_api_operational": not settings.is_production,
@@ -137,6 +156,8 @@ async def _require_resource_authorization(request: Request, resource: dict) -> d
 
 @app.get("/health")
 def health():
+    if settings.is_production:
+        return {"status": "ok"}
     return {
         "status": "ok",
         "environment": settings.environment,
@@ -149,6 +170,11 @@ def health():
 @app.get("/ready")
 async def ready():
     snapshot = await _readiness_snapshot()
+    if settings.is_production:
+        public = {"status": "ready" if snapshot["service_ready"] else "not_ready"}
+        if not snapshot["service_ready"]:
+            return JSONResponse(public, status_code=503)
+        return public
     if not snapshot["service_ready"]:
         return JSONResponse(snapshot, status_code=503)
     return snapshot
@@ -406,7 +432,11 @@ async def ecocash_webhook(request: Request, x_ecocash_signature: str = Header(al
 def reconciliation():
     result = reconcile()
     monetary_truth = reconcile_monetary_truth()
-    metadata_balanced = bool(result.get("balanced", False))
+    try:
+        dangling = int(result.get("succeeded_without_journal", 0))
+    except (TypeError, ValueError):
+        dangling = -1
+    metadata_balanced = bool(result.get("balanced", False) and dangling == 0)
     result["metadata_balanced"] = metadata_balanced
     result["monetary_truth"] = monetary_truth
     result["balanced"] = bool(metadata_balanced and monetary_truth["consistent"])
