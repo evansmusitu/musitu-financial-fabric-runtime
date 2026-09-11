@@ -13,7 +13,7 @@ dependencies = [
   "httpx>=0.27,<1",
   "pydantic>=2.8,<3",
   "psycopg[binary]>=3.2,<4",
-  "tigerbeetle>=0.17.8,<0.18",
+  "tigerbeetle==0.17.8",
 ]
 
 [project.optional-dependencies]
