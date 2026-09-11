@@ -1,0 +1,138 @@
+name: MUSITU Financial Fabric — Merchant Suspension Race
+
+on:
+  push:
+    branches: [musitu-financial-fabric-production-readiness]
+    paths:
+      - 'musitu_financial_fabric/app/service.py'
+      - 'musitu_financial_fabric/app/merchant_lifecycle.py'
+      - 'musitu_financial_fabric/app/db.py'
+      - 'musitu_financial_fabric/tests/test_production_dispatch_merchant_claim.py'
+      - '.github/workflows/mff-merchant-suspension-race.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  MUSITU_POSTGRES_CI_IMAGE: postgres@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685
+
+jobs:
+  merchant-suspension-serialization:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: musitu_financial_fabric
+    env:
+      MUSITU_ENV: production
+      MUSITU_METADATA_DB_URL: postgresql://postgres:musitu-ci@127.0.0.1:5432/postgres
+      MUSITU_LEDGER_BACKEND: sqlite
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12.14'
+
+      - name: Install exact application dependencies
+        run: |
+          python -m pip install --upgrade pip==26.2.1
+          python -m pip install --constraint constraints-ci.txt -e .
+
+      - name: Start pinned PostgreSQL
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run -d --name musitu-merchant-race-pg \
+            -e POSTGRES_PASSWORD=musitu-ci \
+            -p 5432:5432 \
+            "$MUSITU_POSTGRES_CI_IMAGE"
+          ready=0
+          for i in {1..60}; do
+            if docker exec musitu-merchant-race-pg pg_isready -U postgres >/dev/null 2>&1; then
+              sleep 2
+              if docker exec musitu-merchant-race-pg pg_isready -U postgres >/dev/null 2>&1; then ready=1; break; fi
+            fi
+            sleep 1
+          done
+          if [ "$ready" != 1 ]; then docker logs musitu-merchant-race-pg; exit 1; fi
+
+      - name: Prove suspension serializes before production dispatch claim
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import time
+          from concurrent.futures import ThreadPoolExecutor
+          from types import SimpleNamespace
+
+          from app import db, service
+
+          db.init_db()
+          with db.connect() as conn:
+              conn.execute(
+                  "INSERT INTO merchants(id,name,status,created_at) VALUES (?,?,?,?)",
+                  ("mrc_race", "Race Merchant", "active", "2026-09-11T18:00:00+00:00"),
+              )
+
+          selected = SimpleNamespace(
+              rail="ecocash",
+              score=1.0,
+              cost_bps=0,
+              latency_ms=1,
+              success_probability=1.0,
+          )
+
+          def claim():
+              return service._persist_production_dispatch(
+                  payment_id="pay_race",
+                  merchant_id="mrc_race",
+                  destination_account_id="acct_not_reached",
+                  amount_minor=100,
+                  currency="USD",
+                  selected=selected,
+                  requested_rail="ecocash",
+                  payer_ref="payer",
+                  description="race proof",
+                  idempotency_key="idem_race",
+                  request_hash="hash-race",
+                  risk_score=1,
+                  risk_decision_id="risk-race",
+                  ts="2026-09-11T18:00:00+00:00",
+              )
+
+          with db.connect() as suspension:
+              suspension.execute("BEGIN")
+              locked = suspension.execute(
+                  "SELECT status FROM merchants WHERE id=? FOR UPDATE",
+                  ("mrc_race",),
+              ).fetchone()
+              assert locked["status"] == "active"
+              suspension.execute(
+                  "UPDATE merchants SET status='suspended' WHERE id=?",
+                  ("mrc_race",),
+              )
+
+              with ThreadPoolExecutor(max_workers=1) as pool:
+                  future = pool.submit(claim)
+                  time.sleep(1.0)
+                  assert not future.done(), "dispatch claim did not block on merchant row lock"
+                  suspension.execute("COMMIT")
+                  try:
+                      future.result(timeout=5)
+                  except service.PaymentError as exc:
+                      assert "not active at production dispatch claim" in str(exc)
+                  else:
+                      raise AssertionError("dispatch claim crossed a committed merchant suspension")
+
+          with db.connect() as conn:
+              merchant = conn.execute("SELECT status FROM merchants WHERE id=?", ("mrc_race",)).fetchone()
+              payment = conn.execute("SELECT id FROM payment_intents WHERE id=?", ("pay_race",)).fetchone()
+          assert merchant["status"] == "suspended"
+          assert payment is None
+          print("PASS: committed merchant suspension wins over a concurrent production dispatch claim")
+          PY
+
+      - name: Cleanup
+        if: always()
+        run: docker rm -f musitu-merchant-race-pg >/dev/null 2>&1 || true
