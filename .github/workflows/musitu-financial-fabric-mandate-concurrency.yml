@@ -7,6 +7,7 @@ on:
       - 'musitu_financial_fabric/app/db.py'
       - 'musitu_financial_fabric/app/service.py'
       - 'musitu_financial_fabric/tests/test_postgres_mandate_serialization.py'
+      - 'musitu_financial_fabric/constraints-ci.txt'
       - '.github/workflows/musitu-financial-fabric-mandate-concurrency.yml'
   workflow_dispatch:
 
@@ -27,9 +28,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: '3.12'
-      - name: Install application
-        run: python -m pip install -e .
+          python-version: '3.12.14'
+      - name: Install evidence-locked application
+        run: python -m pip install -c constraints-ci.txt -e . && python -m pip check
       - name: Start PostgreSQL
         run: docker run -d --name musitu-mandate-postgres -e POSTGRES_PASSWORD=musitu-ci -p 5432:5432 "$MUSITU_POSTGRES_CI_IMAGE"
       - name: Verify PostgreSQL
