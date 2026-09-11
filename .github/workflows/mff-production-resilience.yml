@@ -56,10 +56,10 @@ jobs:
             "$MUSITU_POSTGRES_CI_IMAGE"
 
           for i in {1..60}; do
-            if docker exec musitu-resilience-pg pg_isready -U postgres >/dev/null 2>&1; then break; fi
+            if docker exec musitu-resilience-pg pg_isready -h 127.0.0.1 -U postgres >/dev/null 2>&1; then break; fi
             sleep 1
           done
-          docker exec musitu-resilience-pg pg_isready -U postgres
+          docker exec musitu-resilience-pg pg_isready -h 127.0.0.1 -U postgres
 
           mkdir -p "$RUNNER_TEMP/tb-resilience"
           docker run --rm --security-opt seccomp=unconfined \
@@ -331,10 +331,10 @@ jobs:
 
           docker start musitu-resilience-pg
           for i in {1..60}; do
-            if docker exec musitu-resilience-pg pg_isready -U postgres >/dev/null 2>&1; then break; fi
+            if docker exec musitu-resilience-pg pg_isready -h 127.0.0.1 -U postgres >/dev/null 2>&1; then break; fi
             sleep 1
           done
-          docker exec musitu-resilience-pg pg_isready -U postgres
+          docker exec musitu-resilience-pg pg_isready -h 127.0.0.1 -U postgres
 
           python - <<'PY' | tee -a /tmp/resilience-pg-outage.txt
           import json
