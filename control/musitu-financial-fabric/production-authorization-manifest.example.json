@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "system": "MUSITU Financial Fabric",
+  "purpose": "Template only. Never treat this repository copy as authorization evidence.",
+  "funds_scope": "none",
+  "expires_at": null,
+  "evidence": {
+    "regulator": {
+      "status": "missing",
+      "evidence_ref": ""
+    },
+    "sponsor_bank": {
+      "status": "missing",
+      "evidence_ref": ""
+    },
+    "data_protection": {
+      "status": "missing",
+      "evidence_ref": ""
+    },
+    "independent_security": {
+      "status": "missing",
+      "evidence_ref": ""
+    }
+  },
+  "instructions": "The deployed authorization manifest must live outside the source repository. Pin its exact SHA-256 in MUSITU_AUTHORIZATION_MANIFEST_SHA256. Production code validates the digest and required evidence before allowing live funds."
+}

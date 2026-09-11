@@ -5,13 +5,16 @@ from contextlib import asynccontextmanager
 from urllib.parse import urlencode
 
 from fastapi import FastAPI, Header, HTTPException, Request, Response
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from .audit import verify_audit_chain
+from .auth import production_auth_middleware
 from .component_registry import component_manifest, probe_components
 from .config import settings
 from .db import init_db
 from .ledger import balance, get_account
+from .production import ProductionGateError, enforce_safe_startup, production_readiness
 from .protocols.adapters import (
     gsma_transaction,
     iso20022_pacs008,
@@ -28,22 +31,29 @@ from .service import (
     create_identity,
     create_merchant,
     create_payment_intent,
-    fail_payment,
     get_agent_mandate,
     get_payment,
     reconcile,
     register_webhook_event,
     settle_payment,
 )
+from .settlement import ProviderSettlementError, provider_fail, provider_succeed
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    enforce_safe_startup()
     init_db()
     yield
 
 
-app = FastAPI(title="MUSITU Financial Fabric", version="0.2.0", lifespan=lifespan)
+app = FastAPI(title="MUSITU Financial Fabric", version="0.3.0", lifespan=lifespan)
+app.middleware("http")(production_auth_middleware)
+
+
+@app.exception_handler(ProductionGateError)
+async def production_gate_error(_: Request, exc: ProductionGateError):
+    return JSONResponse({"detail": str(exc), "production_gate": "closed"}, status_code=503)
 
 
 class MerchantCreate(BaseModel):
@@ -95,12 +105,15 @@ class ProtocolPaymentEnvelope(BaseModel):
 
 @app.get("/health")
 def health():
+    gate = production_readiness() if settings.is_production else {"ready_for_live_funds": False, "checks": []}
     return {
         "status": "ok",
         "environment": settings.environment,
+        "production_mode": settings.production_mode,
         "live_funds_enabled": settings.live_funds_enabled,
-        "custody_mode": "disabled" if not settings.live_funds_enabled else "explicitly-enabled",
-        "fabric_version": "0.2.0",
+        "ready_for_live_funds": gate["ready_for_live_funds"],
+        "custody_mode": "disabled" if not gate["ready_for_live_funds"] else "externally-authorized",
+        "fabric_version": "0.3.0",
     }
 
 
@@ -112,8 +125,11 @@ def fabric_components():
 @app.get("/v1/fabric/readiness")
 async def fabric_readiness():
     result = await probe_components()
-    result["production_funds_gate"] = bool(settings.environment == "production" and settings.live_funds_enabled)
-    result["sandbox_api_operational"] = True
+    result["sandbox_api_operational"] = not settings.is_production
+    result["production"] = production_readiness() if settings.is_production else {
+        "ready_for_live_funds": False,
+        "checks": [],
+    }
     return result
 
 
@@ -257,21 +273,19 @@ async def iso20022_create(request: Request, merchant_id: str, destination_accoun
 
 @app.get("/mpp/challenge")
 def mpp_payment_challenge(amount_minor: int, currency: str, resource: str, response: Response):
-    challenge = mpp_challenge(amount_minor, currency, resource)
     response.status_code = 402
-    return challenge
+    return mpp_challenge(amount_minor, currency, resource)
 
 
 @app.get("/x402/challenge")
 def x402_payment_challenge(amount_minor: int, currency: str, resource: str, response: Response):
-    challenge = x402_challenge(amount_minor, currency, resource)
     response.status_code = 402
-    return challenge
+    return x402_challenge(amount_minor, currency, resource)
 
 
 @app.post("/v1/sandbox/payments/{payment_id}/succeed")
 def sandbox_succeed(payment_id: str):
-    if settings.environment == "production":
+    if settings.is_production:
         raise HTTPException(404, "not found")
     try:
         return settle_payment(payment_id, provider_event_id="sandbox-manual")
@@ -281,6 +295,8 @@ def sandbox_succeed(payment_id: str):
 
 @app.post("/v1/webhooks/ecocash")
 async def ecocash_webhook(request: Request, x_ecocash_signature: str = Header(alias="X-EcoCash-Signature")):
+    if settings.is_production and not settings.ecocash_contract_confirmed:
+        raise HTTPException(503, "EcoCash production webhook contract is not confirmed")
     body = await request.body()
     if not verify_hmac(body, x_ecocash_signature, settings.webhook_secret):
         raise HTTPException(401, "invalid webhook signature")
@@ -300,14 +316,14 @@ async def ecocash_webhook(request: Request, x_ecocash_signature: str = Header(al
         return {"accepted": True, "duplicate": True}
     try:
         if status in {"succeeded", "success", "paid", "completed"}:
-            payment = settle_payment(payment_id, event_id)
+            payment = provider_succeed(provider="ecocash", payment_id=payment_id, provider_event_id=event_id)
         elif status in {"failed", "declined", "cancelled", "canceled"}:
-            payment = fail_payment(payment_id, event_id)
+            payment = provider_fail(provider="ecocash", payment_id=payment_id, provider_event_id=event_id)
         else:
             payment = get_payment(payment_id)
             if not payment:
-                raise PaymentError("payment not found")
-    except PaymentError as exc:
+                raise ProviderSettlementError("payment not found")
+    except (ProviderSettlementError, PaymentError) as exc:
         raise HTTPException(400, str(exc)) from exc
     return {"accepted": True, "duplicate": False, "payment": payment}
 

@@ -1,0 +1,130 @@
+name: MUSITU Financial Fabric — Production Readiness
+
+on:
+  push:
+    branches: [musitu-financial-fabric-production-readiness]
+    paths:
+      - 'musitu_financial_fabric/**'
+      - 'control/musitu-financial-fabric/**'
+      - 'docs/production-readiness/**'
+      - '.github/workflows/musitu-financial-fabric-production-readiness.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  software-controls:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: musitu_financial_fabric
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install application and test dependencies
+        run: python -m pip install -e '.[test]'
+      - name: Compile production control plane
+        run: python -m compileall -q app tests
+      - name: Run complete test suite
+        run: pytest -q
+      - name: Prove live-funds gate cannot open without authorization evidence
+        env:
+          MUSITU_ENV: production
+          MUSITU_LIVE_FUNDS_ENABLED: 'true'
+          MUSITU_PRODUCTION_MODE: pilot
+          MUSITU_METADATA_DB_URL: postgresql://user:pass@127.0.0.1/musitu
+          MUSITU_LEDGER_BACKEND: tigerbeetle
+          MUSITU_TIGERBEETLE_ADDRESSES: 127.0.0.1:3000
+          MUSITU_AUTH_INTROSPECTION_URL: https://identity.invalid/introspect
+          MUSITU_AUTH_CLIENT_ID: musitu
+          MUSITU_AUTH_CLIENT_SECRET: test-only
+          MUSITU_AUTHZ_GATE_URL: https://authz.invalid/decision
+          MUSITU_RISK_GATE_URL: https://risk.invalid/decision
+          MUSITU_ECOCASH_WEBHOOK_SECRET: 0123456789abcdef0123456789abcdef
+        run: |
+          python - <<'PY'
+          from app.production import production_readiness
+          result = production_readiness()
+          assert result['ready_for_live_funds'] is False, result
+          assert any(not row['ok'] and row['category'] == 'external' for row in result['checks'])
+          print('PASS: external authorization evidence remains fail-closed')
+          PY
+
+  production-data-plane:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: musitu_financial_fabric
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install application
+        run: python -m pip install -e .
+      - name: Start PostgreSQL
+        run: docker run -d --name musitu-prod-postgres -e POSTGRES_PASSWORD=musitu-ci -p 5432:5432 postgres:16-alpine
+      - name: Verify PostgreSQL
+        run: |
+          for i in {1..60}; do docker exec musitu-prod-postgres pg_isready -U postgres && exit 0 || sleep 1; done
+          docker logs musitu-prod-postgres
+          exit 1
+      - name: Start pinned TigerBeetle
+        run: |
+          mkdir -p "$RUNNER_TEMP/tb-prod"
+          docker run --rm --security-opt seccomp=unconfined \
+            -v "$RUNNER_TEMP/tb-prod:/data" ghcr.io/tigerbeetle/tigerbeetle:0.17.8 \
+            format --cluster=0 --replica=0 --replica-count=1 /data/0_0.tigerbeetle
+          docker run -d --name musitu-prod-tigerbeetle --security-opt seccomp=unconfined \
+            -p 3000:3000 -v "$RUNNER_TEMP/tb-prod:/data" ghcr.io/tigerbeetle/tigerbeetle:0.17.8 \
+            start --addresses=0.0.0.0:3000 --cache-grid=256MiB /data/0_0.tigerbeetle
+          for i in {1..30}; do
+            if (echo > /dev/tcp/127.0.0.1/3000) >/dev/null 2>&1; then exit 0; fi
+            sleep 1
+          done
+          docker logs musitu-prod-tigerbeetle
+          exit 1
+      - name: Execute production metadata and monetary-truth path
+        env:
+          MUSITU_ENV: production
+          MUSITU_LIVE_FUNDS_ENABLED: 'false'
+          MUSITU_PRODUCTION_MODE: shadow
+          MUSITU_METADATA_DB_URL: postgresql://postgres:musitu-ci@127.0.0.1:5432/postgres
+          MUSITU_LEDGER_BACKEND: tigerbeetle
+          MUSITU_TIGERBEETLE_CLUSTER_ID: '0'
+          MUSITU_TIGERBEETLE_ADDRESSES: 127.0.0.1:3000
+          MUSITU_AUTH_INTROSPECTION_URL: https://identity.invalid/introspect
+          MUSITU_AUTH_CLIENT_ID: musitu
+          MUSITU_AUTH_CLIENT_SECRET: test-only
+          MUSITU_AUTHZ_GATE_URL: https://authz.invalid/decision
+          MUSITU_RISK_GATE_URL: https://risk.invalid/decision
+          MUSITU_ECOCASH_WEBHOOK_SECRET: 0123456789abcdef0123456789abcdef
+        run: |
+          python - <<'PY'
+          from app.production import enforce_safe_startup
+          from app.db import init_db
+          from app.ledger import balance, create_account, post
+
+          enforce_safe_startup()
+          init_db()
+          source = create_account('system', 'ci-source', 'USD', 'rail_clearing')
+          destination = create_account('merchant', 'ci-destination', 'USD', 'settlement')
+          journal = post(
+              reference='production-readiness-ci-transfer',
+              memo='Production readiness TigerBeetle proof',
+              postings=[(source['id'], -125), (destination['id'], 125)],
+          )
+          assert journal.startswith('jrnl_')
+          assert balance(source['id']) == -125
+          assert balance(destination['id']) == 125
+          print('PASS: PostgreSQL metadata + TigerBeetle monetary truth')
+          PY
+      - name: Capture failure diagnostics
+        if: failure()
+        run: |
+          docker ps -a || true
+          docker logs musitu-prod-postgres || true
+          docker logs musitu-prod-tigerbeetle || true

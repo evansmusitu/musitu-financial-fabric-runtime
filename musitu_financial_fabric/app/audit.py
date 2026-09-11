@@ -5,6 +5,7 @@ import json
 from datetime import datetime, timezone
 from typing import Any
 
+from .config import settings
 from .db import connect
 
 
@@ -26,6 +27,9 @@ def append_audit(event_type: str, entity_id: str, body: dict[str, Any], conn=Non
         if not conn.in_transaction:
             conn.execute("BEGIN IMMEDIATE")
             started_transaction = True
+        if settings.uses_postgres:
+            # Serialize the hash-chain head across concurrent writers.
+            conn.execute("SELECT pg_advisory_xact_lock(736588191)")
         row = conn.execute("SELECT event_hash FROM audit_log ORDER BY seq DESC LIMIT 1").fetchone()
         prev_hash = row["event_hash"] if row else "GENESIS"
         body_json = json.dumps(body, sort_keys=True, separators=(",", ":"))
