@@ -1,3 +1,4 @@
 MUSITU Financial Fabric coherent same-SHA validation marker.
 This file is inert: it changes no runtime, workflow, security, health-gate, or production behavior.
 Purpose: trigger all required runtime gates on one authoritative commit for evidence-only revalidation.
+Round: final coherent validation after Kill Bill correction and Rafiki diagnostic reproduction.
