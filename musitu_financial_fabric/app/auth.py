@@ -58,7 +58,7 @@ async def _introspect(token: str) -> dict:
         raise ValueError("inactive token")
     required_scope = settings.auth_required_scope.strip()
     scopes = set(str(payload.get("scope", "")).split())
-    if required_scope and required_scope not in scopes:
+    if not required_scope or required_scope not in scopes:
         raise ValueError("required scope missing")
     required_audience = settings.expected_auth_audience.strip()
     audience_value = payload.get("aud")
