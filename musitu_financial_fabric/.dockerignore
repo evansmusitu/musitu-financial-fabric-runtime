@@ -1,0 +1,6 @@
+*
+!Dockerfile
+!pyproject.toml
+!constraints-ci.txt
+!app/
+!app/**
