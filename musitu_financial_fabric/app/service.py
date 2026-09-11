@@ -497,7 +497,16 @@ async def create_payment_intent(*, merchant_id: str, destination_account_id: str
     policy = evaluate_payment_policy(amount_minor=amount_minor, currency=currency, rail=selected.rail, max_amount_minor=settings.max_single_payment_minor)
     if not policy.allow:
         raise PaymentError(f"policy denied: {policy.reason}")
-    risk = evaluate_reference_risk(amount_minor=amount_minor, payer_ref=payer_ref, description=description)
+    risk = evaluate_reference_risk(
+        amount_minor=amount_minor,
+        payer_ref=payer_ref,
+        description=description,
+        merchant_id=merchant_id,
+        destination_account_id=destination_account_id,
+        currency=currency,
+        rail=selected.rail,
+        idempotency_key=idempotency_key,
+    )
     if not risk.allow:
         raise PaymentError(f"risk denied: {risk.reason}")
 

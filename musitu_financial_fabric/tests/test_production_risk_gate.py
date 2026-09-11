@@ -23,6 +23,26 @@ def _production_settings():
     )
 
 
+def _context():
+    return dict(
+        amount_minor=100,
+        payer_ref="payer",
+        description="ok",
+        merchant_id="mrc_1",
+        destination_account_id="acct_1",
+        currency="USD",
+        rail="ecocash",
+        idempotency_key="idem-1",
+    )
+
+
+def test_production_risk_context_is_mandatory(monkeypatch):
+    monkeypatch.setattr("app.risk.settings", _production_settings())
+    decision = evaluate_reference_risk(amount_minor=100, payer_ref="payer", description=None)
+    assert decision.allow is False
+    assert decision.reason == "production_risk_context_incomplete"
+
+
 def test_tazama_only_evidence_is_denied(monkeypatch):
     monkeypatch.setattr("app.risk.settings", _production_settings())
     monkeypatch.setattr(
@@ -35,24 +55,40 @@ def test_tazama_only_evidence_is_denied(monkeypatch):
             "engines": ["tazama"],
         }),
     )
-    decision = evaluate_reference_risk(amount_minor=100, payer_ref="payer", description=None)
+    decision = evaluate_reference_risk(**_context())
     assert decision.allow is False
     assert decision.reason == "production_risk_evidence_incomplete"
 
 
-def test_tazama_and_watchman_evidence_is_accepted(monkeypatch):
+def test_tazama_and_watchman_evidence_is_accepted_with_full_context(monkeypatch):
     monkeypatch.setattr("app.risk.settings", _production_settings())
-    monkeypatch.setattr(
-        "app.risk.httpx.post",
-        lambda *args, **kwargs: _Response({
+    captured = {}
+
+    def _post(*args, **kwargs):
+        captured.update(kwargs["json"])
+        return _Response({
             "allow": True,
             "score": 7,
             "reason": "allow",
             "decision_id": "risk-2",
             "engines": ["tazama", "watchman"],
-        }),
-    )
-    decision = evaluate_reference_risk(amount_minor=100, payer_ref="payer", description="ok")
+        })
+
+    monkeypatch.setattr("app.risk.httpx.post", _post)
+    decision = evaluate_reference_risk(**_context())
     assert decision.allow is True
     assert decision.score == 7
     assert decision.decision_id == "risk-2"
+    assert captured["merchant_id"] == "mrc_1"
+    assert captured["destination_account_id"] == "acct_1"
+    assert captured["currency"] == "USD"
+    assert captured["rail"] == "ecocash"
+    assert captured["idempotency_key"] == "idem-1"
+    assert captured["required_engines"] == ["tazama", "watchman"]
+
+
+def test_sandbox_risk_remains_reference_compatible(monkeypatch):
+    monkeypatch.setattr("app.risk.settings", Settings(environment="sandbox"))
+    decision = evaluate_reference_risk(amount_minor=100, payer_ref="payer", description="ok")
+    assert decision.allow is True
+    assert decision.decision_id == "sandbox-reference"
