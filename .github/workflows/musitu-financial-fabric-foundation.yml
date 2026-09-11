@@ -23,7 +23,7 @@ jobs:
   manifest:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Verify mandatory manifest
         run: |
           python - <<'PY'
@@ -38,7 +38,7 @@ jobs:
   tigerbeetle:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Start pinned TigerBeetle
         run: |
           mkdir -p "$RUNNER_TEMP/tb-data"
@@ -60,7 +60,7 @@ jobs:
   data-event-policy:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Start PostgreSQL
         run: docker run -d --name musitu-postgres -e POSTGRES_PASSWORD=musitu-ci -p 5432:5432 "$MUSITU_POSTGRES_CI_IMAGE"
       - name: Start NATS JetStream
@@ -102,14 +102,14 @@ jobs:
       OPENAPI_GENERATOR_VERSION: '7.24.0'
       SCARF_ANALYTICS: 'false'
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
         with:
           cosign-release: v2.5.2
       - uses: opentofu/setup-opentofu@9d84900f3238fab8cd84ce47d658d25dd008be2f # v1
         with:
           tofu_version: 1.12.6
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24.18.0'
       - name: Install API tooling at exact versions
