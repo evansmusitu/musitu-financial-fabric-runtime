@@ -16,6 +16,7 @@ from .db import init_db
 from .ledger import balance, get_account
 from .production import ProductionGateError, enforce_safe_startup, production_readiness
 from .protocols.adapters import gsma_transaction, iso20022_pacs008, mpp_challenge, open_payments_incoming, stripe_payment_intent, x402_challenge
+from .reconciliation import reconcile_monetary_truth
 from .security import verify_hmac
 from .service import PaymentError, create_agent_mandate, create_agent_payment, create_identity, create_merchant, create_payment_intent, get_agent_mandate, get_payment, reconcile, register_webhook_event, settle_payment
 from .settlement import ProviderSettlementError, provider_fail, provider_succeed
@@ -95,8 +96,13 @@ def _audit_readiness() -> dict:
 async def _readiness_snapshot() -> dict:
     components = await probe_components()
     audit = _audit_readiness()
+    monetary_truth = reconcile_monetary_truth()
     production = production_readiness() if settings.is_production else {"ready_for_live_funds": False, "checks": []}
-    service_ready = bool(components["all_required_runtime_healthy"] and audit["valid"])
+    service_ready = bool(
+        components["all_required_runtime_healthy"]
+        and audit["valid"]
+        and monetary_truth["consistent"]
+    )
     live_funds_ready = bool(
         settings.is_production
         and settings.live_funds_enabled
@@ -106,6 +112,7 @@ async def _readiness_snapshot() -> dict:
     return {
         **components,
         "audit": audit,
+        "monetary_truth": monetary_truth,
         "service_ready": service_ready,
         "sandbox_api_operational": not settings.is_production,
         "production": production,
@@ -316,7 +323,13 @@ async def ecocash_webhook(request: Request, x_ecocash_signature: str = Header(al
 
 @app.get("/v1/reconciliation")
 def reconciliation():
-    return reconcile()
+    result = reconcile()
+    monetary_truth = reconcile_monetary_truth()
+    metadata_balanced = bool(result.get("balanced", False))
+    result["metadata_balanced"] = metadata_balanced
+    result["monetary_truth"] = monetary_truth
+    result["balanced"] = bool(metadata_balanced and monetary_truth["consistent"])
+    return result
 
 
 @app.get("/v1/audit/verify")

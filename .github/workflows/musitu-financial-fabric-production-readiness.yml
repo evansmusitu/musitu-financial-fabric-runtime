@@ -109,6 +109,7 @@ jobs:
           from app.production import enforce_safe_startup
           from app.db import init_db
           from app.ledger import balance, create_account, post
+          from app.reconciliation import reconcile_monetary_truth
 
           enforce_safe_startup()
           init_db()
@@ -122,7 +123,53 @@ jobs:
           assert journal.startswith('jrnl_')
           assert balance(source['id']) == -125
           assert balance(destination['id']) == 125
-          print('PASS: PostgreSQL metadata + TigerBeetle monetary truth')
+          truth = reconcile_monetary_truth()
+          assert truth['applicable'] is True, truth
+          assert truth['consistent'] is True, truth
+          assert truth['accounts_checked'] >= 2, truth
+          print('PASS: PostgreSQL metadata + TigerBeetle monetary truth reconcile')
+          PY
+      - name: Prove cross-ledger divergence is detected fail-closed
+        env:
+          MUSITU_ENV: production
+          MUSITU_LIVE_FUNDS_ENABLED: 'false'
+          MUSITU_PRODUCTION_MODE: shadow
+          MUSITU_METADATA_DB_URL: postgresql://postgres:musitu-ci@127.0.0.1:5432/postgres
+          MUSITU_LEDGER_BACKEND: tigerbeetle
+          MUSITU_TIGERBEETLE_CLUSTER_ID: '0'
+          MUSITU_TIGERBEETLE_ADDRESSES: 127.0.0.1:3000
+          MUSITU_AUTH_INTROSPECTION_URL: https://identity.invalid/introspect
+          MUSITU_AUTH_CLIENT_ID: musitu
+          MUSITU_AUTH_CLIENT_SECRET: test-only
+          MUSITU_AUTHZ_GATE_URL: https://authz.invalid/decision
+          MUSITU_RISK_GATE_URL: https://risk.invalid/decision
+          MUSITU_ECOCASH_WEBHOOK_SECRET: 0123456789abcdef0123456789abcdef
+        run: |
+          python - <<'PY'
+          from app.db import connect
+          from app.ledger import create_account
+          from app.reconciliation import reconcile_monetary_truth
+
+          source = create_account('system', 'ci-source', 'USD', 'rail_clearing')
+          try:
+              with connect() as conn:
+                  conn.execute(
+                      "UPDATE ledger_postings SET delta_minor=delta_minor-1 WHERE account_id=? AND journal_id=(SELECT id FROM journal_entries WHERE reference=?)",
+                      (source['id'], 'production-readiness-ci-transfer'),
+                  )
+              drift = reconcile_monetary_truth()
+              assert drift['consistent'] is False, drift
+              assert any(row['account_id'] == source['id'] for row in drift['mismatches']), drift
+              print('PASS: PostgreSQL/TigerBeetle divergence is detected')
+          finally:
+              with connect() as conn:
+                  conn.execute(
+                      "UPDATE ledger_postings SET delta_minor=delta_minor+1 WHERE account_id=? AND journal_id=(SELECT id FROM journal_entries WHERE reference=?)",
+                      (source['id'], 'production-readiness-ci-transfer'),
+                  )
+          restored = reconcile_monetary_truth()
+          assert restored['consistent'] is True, restored
+          print('PASS: reconciliation returns green only after metadata mirror is repaired')
           PY
       - name: Prove PostgreSQL backup and restore
         run: |
@@ -184,11 +231,14 @@ jobs:
           if [ "$ready" != "1" ]; then docker logs musitu-prod-tigerbeetle; exit 1; fi
           python - <<'PY'
           from app.ledger import balance, create_account
+          from app.reconciliation import reconcile_monetary_truth
           source = create_account('system', 'ci-source', 'USD', 'rail_clearing')
           destination = create_account('merchant', 'ci-destination', 'USD', 'settlement')
           assert balance(source['id']) == -125
           assert balance(destination['id']) == 125
-          print('PASS: TigerBeetle monetary truth persisted across restart')
+          truth = reconcile_monetary_truth()
+          assert truth['consistent'] is True, truth
+          print('PASS: TigerBeetle monetary truth persisted and still reconciles after restart')
           PY
       - name: Capture failure diagnostics
         if: failure()
