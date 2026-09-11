@@ -1,7 +1,33 @@
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass, field
+from importlib.metadata import PackageNotFoundError, version as distribution_version
+
+
+_PROVEN_PRODUCTION_PYTHONS = {(3, 12, 14), (3, 13, 15)}
+_PROVEN_RUNTIME_DEPENDENCIES = {
+    "annotated-doc": "0.0.5",
+    "annotated-types": "0.8.0",
+    "anyio": "4.15.1",
+    "certifi": "2026.7.22",
+    "click": "8.5.0",
+    "fastapi": "0.141.1",
+    "h11": "0.16.0",
+    "httpcore": "1.0.9",
+    "httpx": "0.28.1",
+    "idna": "3.19",
+    "psycopg": "3.3.5",
+    "psycopg-binary": "3.3.5",
+    "pydantic": "2.13.5",
+    "pydantic-core": "2.46.5",
+    "starlette": "1.6.0",
+    "tigerbeetle": "0.17.8",
+    "typing-extensions": "4.16.0",
+    "typing-inspection": "0.4.4",
+    "uvicorn": "0.52.4",
+}
 
 
 def _bool(name: str, default: bool = False) -> bool:
@@ -23,6 +49,24 @@ def _csv(name: str, default: str = "") -> tuple[str, ...]:
 def _csv_upper(name: str, default: str = "") -> tuple[str, ...]:
     raw = _str(name, default)
     return tuple(dict.fromkeys(part.strip().upper() for part in raw.split(",") if part.strip()))
+
+
+def _assert_proven_production_runtime() -> None:
+    python_version = tuple(sys.version_info[:3])
+    if python_version not in _PROVEN_PRODUCTION_PYTHONS:
+        allowed = ", ".join(".".join(map(str, value)) for value in sorted(_PROVEN_PRODUCTION_PYTHONS))
+        raise ValueError(
+            f"production Python runtime {'.'.join(map(str, python_version))} is outside evidence-locked versions: {allowed}"
+        )
+    for package, expected in _PROVEN_RUNTIME_DEPENDENCIES.items():
+        try:
+            actual = distribution_version(package)
+        except PackageNotFoundError as exc:
+            raise ValueError(f"production dependency {package} is missing; expected {expected}") from exc
+        if actual != expected:
+            raise ValueError(
+                f"production dependency {package}=={actual} is outside evidence lock; expected {package}=={expected}"
+            )
 
 
 @dataclass(frozen=True)
@@ -72,6 +116,7 @@ class Settings:
         if self.environment == "production" and self.uses_postgres and self.ledger_backend == "tigerbeetle":
             if not 1 <= self.tigerbeetle_operation_timeout_seconds <= 30:
                 raise ValueError("production TigerBeetle operation timeout must be between 1 and 30 seconds")
+            _assert_proven_production_runtime()
 
     @property
     def is_production(self) -> bool:
