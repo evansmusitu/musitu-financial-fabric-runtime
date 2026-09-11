@@ -27,6 +27,7 @@ class EcoCashRail(PaymentRail):
             settings.ecocash_api_base,
             settings.ecocash_oauth_path,
             settings.ecocash_payment_path,
+            settings.ecocash_callback_url,
             settings.ecocash_client_id,
             settings.ecocash_client_secret,
         ]
@@ -50,7 +51,7 @@ class EcoCashRail(PaymentRail):
                 "currency": request.currency,
                 "payer_ref": request.payer_ref,
                 "description": request.description,
-                "callback_url": request.callback_url,
+                "callback_url": settings.ecocash_callback_url,
             }
             response = await client.post(
                 settings.ecocash_payment_path,

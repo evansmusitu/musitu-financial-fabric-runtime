@@ -60,6 +60,7 @@ class Settings:
     ecocash_api_base: str = field(default_factory=lambda: _str("MUSITU_ECOCASH_API_BASE"))
     ecocash_oauth_path: str = field(default_factory=lambda: _str("MUSITU_ECOCASH_OAUTH_PATH"))
     ecocash_payment_path: str = field(default_factory=lambda: _str("MUSITU_ECOCASH_PAYMENT_PATH"))
+    ecocash_callback_url: str = field(default_factory=lambda: _str("MUSITU_ECOCASH_CALLBACK_URL"))
     ecocash_client_id: str = field(default_factory=lambda: _str("MUSITU_ECOCASH_CLIENT_ID"))
     ecocash_client_secret: str = field(default_factory=lambda: _str("MUSITU_ECOCASH_CLIENT_SECRET"))
     max_single_payment_minor: int = field(default_factory=lambda: int(_str("MUSITU_MAX_SINGLE_PAYMENT_MINOR", "1000000")))

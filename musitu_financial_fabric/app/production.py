@@ -212,6 +212,7 @@ def production_checks(cfg: Settings = settings) -> list[ProductionCheck]:
         cfg.ecocash_api_base,
         cfg.ecocash_oauth_path,
         cfg.ecocash_payment_path,
+        cfg.ecocash_callback_url,
         cfg.ecocash_client_id,
         cfg.ecocash_client_secret,
     ])
@@ -219,7 +220,9 @@ def production_checks(cfg: Settings = settings) -> list[ProductionCheck]:
     introspection_transport_ok = _secure_or_loopback_service_url(cfg.auth_introspection_url)
     authz_transport_ok = _secure_or_loopback_service_url(cfg.authz_gate_url)
     risk_transport_ok = _secure_or_loopback_service_url(cfg.risk_gate_url)
-    ecocash_transport_ok = (not ecocash_enabled) or _secure_external_url(cfg.ecocash_api_base)
+    ecocash_transport_ok = (not ecocash_enabled) or (
+        _secure_external_url(cfg.ecocash_api_base) and _secure_external_url(cfg.ecocash_callback_url)
+    )
 
     checks = [
         ProductionCheck("environment", cfg.environment == "production", "software", "runtime environment is production"),
@@ -262,9 +265,9 @@ def production_checks(cfg: Settings = settings) -> list[ProductionCheck]:
             "ecocash_connector",
             (not ecocash_enabled) or ecocash_configured,
             "software",
-            "EcoCash production credentials and exact endpoint configuration are present when the rail is enabled",
+            "EcoCash production credentials, endpoints, and MUSITU provider callback are present when the rail is enabled",
         ),
-        ProductionCheck("ecocash_transport", ecocash_transport_ok, "software", "EcoCash production API transport is HTTPS"),
+        ProductionCheck("ecocash_transport", ecocash_transport_ok, "software", "EcoCash production API and MUSITU provider callback use HTTPS"),
         ProductionCheck(
             "api_auth",
             all([cfg.auth_introspection_url, cfg.auth_client_id, cfg.auth_client_secret]),
@@ -330,8 +333,11 @@ def enforce_safe_startup(cfg: Settings = settings) -> None:
             raise ProductionGateError("production startup requires a risk/compliance decision gate")
         if not _secure_or_loopback_service_url(cfg.risk_gate_url):
             raise ProductionGateError("production risk gate requires HTTPS or a loopback sidecar")
-        if "ecocash" in set(cfg.production_enabled_rails) and cfg.ecocash_api_base and not _secure_external_url(cfg.ecocash_api_base):
-            raise ProductionGateError("production EcoCash API requires HTTPS")
+        if "ecocash" in set(cfg.production_enabled_rails):
+            if cfg.ecocash_api_base and not _secure_external_url(cfg.ecocash_api_base):
+                raise ProductionGateError("production EcoCash API requires HTTPS")
+            if cfg.ecocash_callback_url and not _secure_external_url(cfg.ecocash_callback_url):
+                raise ProductionGateError("production EcoCash callback requires HTTPS")
         if len(cfg.webhook_secret) < 32 or cfg.webhook_secret == "sandbox-secret-change-me":
             raise ProductionGateError("production startup requires a strong non-default webhook secret")
         if cfg.live_funds_enabled:

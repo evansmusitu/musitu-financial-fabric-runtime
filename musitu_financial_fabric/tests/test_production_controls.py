@@ -32,6 +32,7 @@ def _base_production(**overrides):
         ecocash_api_base="https://ecocash.invalid",
         ecocash_oauth_path="/oauth/token",
         ecocash_payment_path="/payments",
+        ecocash_callback_url="https://musitu.invalid/v1/webhooks/ecocash",
         ecocash_client_id="test-client",
         ecocash_client_secret="test-secret",
         max_single_payment_minor=1000,
@@ -150,6 +151,18 @@ def test_live_funds_require_complete_ecocash_connector(tmp_path):
     path, digest = _approved_manifest(tmp_path)
     cfg = _base_production(
         ecocash_client_secret="",
+        authorization_manifest_path=path,
+        authorization_manifest_sha256=digest,
+    )
+    result = production_readiness(cfg)
+    assert result["ready_for_live_funds"] is False
+    assert any(row["key"] == "ecocash_connector" and not row["ok"] for row in result["checks"])
+
+
+def test_live_funds_require_dedicated_ecocash_callback(tmp_path):
+    path, digest = _approved_manifest(tmp_path)
+    cfg = _base_production(
+        ecocash_callback_url="",
         authorization_manifest_path=path,
         authorization_manifest_sha256=digest,
     )
