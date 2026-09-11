@@ -42,6 +42,7 @@ class Settings:
     ledger_backend: str = field(default_factory=lambda: _str("MUSITU_LEDGER_BACKEND", "sqlite").lower())
     tigerbeetle_cluster_id: int = field(default_factory=lambda: int(_str("MUSITU_TIGERBEETLE_CLUSTER_ID", "0")))
     tigerbeetle_addresses: str = field(default_factory=lambda: _str("MUSITU_TIGERBEETLE_ADDRESSES"))
+    tigerbeetle_operation_timeout_seconds: int = field(default_factory=lambda: int(_str("MUSITU_TIGERBEETLE_OPERATION_TIMEOUT_SECONDS", "5")))
     tigerbeetle_account_code: int = field(default_factory=lambda: int(_str("MUSITU_TIGERBEETLE_ACCOUNT_CODE", "100")))
     tigerbeetle_transfer_code: int = field(default_factory=lambda: int(_str("MUSITU_TIGERBEETLE_TRANSFER_CODE", "100")))
 
