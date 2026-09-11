@@ -16,6 +16,7 @@ permissions:
 jobs:
   software-controls:
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: musitu_financial_fabric
@@ -55,6 +56,7 @@ jobs:
 
   production-data-plane:
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: musitu_financial_fabric
@@ -121,6 +123,72 @@ jobs:
           assert balance(source['id']) == -125
           assert balance(destination['id']) == 125
           print('PASS: PostgreSQL metadata + TigerBeetle monetary truth')
+          PY
+      - name: Prove PostgreSQL backup and restore
+        run: |
+          docker exec musitu-prod-postgres pg_dump -U postgres -Fc postgres > "$RUNNER_TEMP/musitu-postgres.dump"
+          test -s "$RUNNER_TEMP/musitu-postgres.dump"
+          docker exec musitu-prod-postgres createdb -U postgres musitu_restore
+          cat "$RUNNER_TEMP/musitu-postgres.dump" | docker exec -i musitu-prod-postgres pg_restore -U postgres -d musitu_restore
+          restored="$(docker exec musitu-prod-postgres psql -U postgres -d musitu_restore -Atc "SELECT COUNT(*) FROM journal_entries WHERE reference='production-readiness-ci-transfer';")"
+          test "$restored" = "1"
+      - name: Verify restored metadata audit chain
+        env:
+          MUSITU_ENV: production
+          MUSITU_LIVE_FUNDS_ENABLED: 'false'
+          MUSITU_PRODUCTION_MODE: shadow
+          MUSITU_METADATA_DB_URL: postgresql://postgres:musitu-ci@127.0.0.1:5432/musitu_restore
+          MUSITU_LEDGER_BACKEND: tigerbeetle
+          MUSITU_TIGERBEETLE_CLUSTER_ID: '0'
+          MUSITU_TIGERBEETLE_ADDRESSES: 127.0.0.1:3000
+          MUSITU_AUTH_INTROSPECTION_URL: https://identity.invalid/introspect
+          MUSITU_AUTH_CLIENT_ID: musitu
+          MUSITU_AUTH_CLIENT_SECRET: test-only
+          MUSITU_AUTHZ_GATE_URL: https://authz.invalid/decision
+          MUSITU_RISK_GATE_URL: https://risk.invalid/decision
+          MUSITU_ECOCASH_WEBHOOK_SECRET: 0123456789abcdef0123456789abcdef
+        run: |
+          python - <<'PY'
+          from app.audit import verify_audit_chain
+          valid, count, broken_at = verify_audit_chain()
+          assert valid, (count, broken_at)
+          assert count > 0
+          print('PASS: restored PostgreSQL audit chain verifies')
+          PY
+      - name: Prove TigerBeetle persistence across process restart
+        env:
+          MUSITU_ENV: production
+          MUSITU_LIVE_FUNDS_ENABLED: 'false'
+          MUSITU_PRODUCTION_MODE: shadow
+          MUSITU_METADATA_DB_URL: postgresql://postgres:musitu-ci@127.0.0.1:5432/postgres
+          MUSITU_LEDGER_BACKEND: tigerbeetle
+          MUSITU_TIGERBEETLE_CLUSTER_ID: '0'
+          MUSITU_TIGERBEETLE_ADDRESSES: 127.0.0.1:3000
+          MUSITU_AUTH_INTROSPECTION_URL: https://identity.invalid/introspect
+          MUSITU_AUTH_CLIENT_ID: musitu
+          MUSITU_AUTH_CLIENT_SECRET: test-only
+          MUSITU_AUTHZ_GATE_URL: https://authz.invalid/decision
+          MUSITU_RISK_GATE_URL: https://risk.invalid/decision
+          MUSITU_ECOCASH_WEBHOOK_SECRET: 0123456789abcdef0123456789abcdef
+        run: |
+          docker stop musitu-prod-tigerbeetle
+          docker rm musitu-prod-tigerbeetle
+          docker run -d --name musitu-prod-tigerbeetle --security-opt seccomp=unconfined \
+            -p 3000:3000 -v "$RUNNER_TEMP/tb-prod:/data" ghcr.io/tigerbeetle/tigerbeetle:0.17.8 \
+            start --addresses=0.0.0.0:3000 --cache-grid=256MiB /data/0_0.tigerbeetle
+          ready=0
+          for i in {1..30}; do
+            if (echo > /dev/tcp/127.0.0.1/3000) >/dev/null 2>&1; then ready=1; break; fi
+            sleep 1
+          done
+          if [ "$ready" != "1" ]; then docker logs musitu-prod-tigerbeetle; exit 1; fi
+          python - <<'PY'
+          from app.ledger import balance, create_account
+          source = create_account('system', 'ci-source', 'USD', 'rail_clearing')
+          destination = create_account('merchant', 'ci-destination', 'USD', 'settlement')
+          assert balance(source['id']) == -125
+          assert balance(destination['id']) == 125
+          print('PASS: TigerBeetle monetary truth persisted across restart')
           PY
       - name: Capture failure diagnostics
         if: failure()
