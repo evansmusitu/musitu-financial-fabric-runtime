@@ -34,6 +34,7 @@ class Settings:
     production_mode: str = field(default_factory=lambda: _str("MUSITU_PRODUCTION_MODE", "shadow").lower())
     production_enabled_rails: tuple[str, ...] = field(default_factory=lambda: _csv("MUSITU_PRODUCTION_ENABLED_RAILS"))
     production_enabled_currencies: tuple[str, ...] = field(default_factory=lambda: _csv_upper("MUSITU_PRODUCTION_ENABLED_CURRENCIES"))
+    max_request_body_bytes: int = field(default_factory=lambda: int(_str("MUSITU_MAX_REQUEST_BODY_BYTES", "1048576")))
 
     authorization_manifest_path: str = field(default_factory=lambda: _str("MUSITU_AUTHORIZATION_MANIFEST_PATH"))
     authorization_manifest_sha256: str = field(default_factory=lambda: _str("MUSITU_AUTHORIZATION_MANIFEST_SHA256").lower())

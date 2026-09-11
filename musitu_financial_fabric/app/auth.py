@@ -13,6 +13,37 @@ _PUBLIC_PRODUCTION_PATHS = {"/health", "/ready"}
 _ECOCASH_WEBHOOK_PATH = "/v1/webhooks/ecocash"
 
 
+class RequestBodyTooLarge(ValueError):
+    pass
+
+
+async def _buffer_limited_body(request: Request) -> bytes:
+    max_bytes = int(settings.max_request_body_bytes)
+    if max_bytes <= 0:
+        raise RuntimeError("production request body limit is invalid")
+
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            declared = int(content_length)
+        except ValueError as exc:
+            raise ValueError("invalid Content-Length") from exc
+        if declared < 0:
+            raise ValueError("invalid Content-Length")
+        if declared > max_bytes:
+            raise RequestBodyTooLarge("request body exceeds production limit")
+
+    body = bytearray()
+    async for chunk in request.stream():
+        if chunk:
+            body.extend(chunk)
+            if len(body) > max_bytes:
+                raise RequestBodyTooLarge("request body exceeds production limit")
+    buffered = bytes(body)
+    request._body = buffered
+    return buffered
+
+
 async def _introspect(token: str) -> dict:
     async with httpx.AsyncClient(timeout=5.0) as client:
         response = await client.post(
@@ -117,6 +148,15 @@ async def _production_ecocash_webhook(request: Request, call_next):
 async def production_auth_middleware(request: Request, call_next):
     if not settings.is_production:
         return await call_next(request)
+    try:
+        await _buffer_limited_body(request)
+    except RequestBodyTooLarge:
+        return JSONResponse({"detail": "production request body too large"}, status_code=413)
+    except ValueError:
+        return JSONResponse({"detail": "invalid production request framing"}, status_code=400)
+    except Exception:
+        return JSONResponse({"detail": "production request body guard unavailable"}, status_code=503)
+
     if request.url.path == _ECOCASH_WEBHOOK_PATH:
         return await _production_ecocash_webhook(request, call_next)
     if request.url.path in _PUBLIC_PRODUCTION_PATHS:
