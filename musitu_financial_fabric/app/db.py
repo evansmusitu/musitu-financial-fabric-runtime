@@ -63,7 +63,23 @@ class _PostgresConnection:
         statement = sql.strip()
         if statement.upper() == "BEGIN IMMEDIATE":
             statement = "BEGIN"
-        return self._conn.execute(statement.replace("?", "%s"), params or ())
+        bound = params or ()
+        normalized = " ".join(statement.split()).lower()
+        if (
+            "select coalesce(sum(amount_minor),0) as total" in normalized
+            and "from agent_mandate_reservations" in normalized
+            and len(bound) >= 1
+        ):
+            # SQLite's BEGIN IMMEDIATE serialized this aggregate check. PostgreSQL
+            # plain BEGIN does not, so concurrent distinct idempotency keys could
+            # both observe the same pre-spend total and overrun a mandate's daily
+            # ceiling. Serialize only reservations for the same mandate for the
+            # duration of the surrounding transaction.
+            self._conn.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                (str(bound[0]),),
+            )
+        return self._conn.execute(statement.replace("?", "%s"), bound)
 
     def executescript(self, script: str) -> None:
         for statement in script.split(";"):
