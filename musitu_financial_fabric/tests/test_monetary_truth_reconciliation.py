@@ -31,13 +31,17 @@ class _Client:
         self.closed = True
 
 
-def _prepare(tmp_path, monkeypatch, *, postings=(100, -100)):
-    cfg = Settings(
+def _settings(tmp_path) -> Settings:
+    return Settings(
         db_path=str(tmp_path / "reconcile.db"),
         environment="production",
         ledger_backend="tigerbeetle",
         tigerbeetle_addresses="127.0.0.1:3000",
     )
+
+
+def _prepare(tmp_path, monkeypatch, *, postings=(100, -100)):
+    cfg = _settings(tmp_path)
     monkeypatch.setattr(db, "settings", cfg)
     monkeypatch.setattr(reconciliation, "settings", cfg)
     db.init_db()
@@ -127,6 +131,37 @@ def test_monetary_truth_lookup_error_fails_closed(tmp_path, monkeypatch):
     assert client.closed is True
 
 
+def test_empty_monetary_mirror_still_probes_tigerbeetle(tmp_path, monkeypatch):
+    cfg = _settings(tmp_path)
+    monkeypatch.setattr(db, "settings", cfg)
+    monkeypatch.setattr(reconciliation, "settings", cfg)
+    db.init_db()
+    client = _Client()
+    monkeypatch.setattr(reconciliation, "_tb_client", lambda: (object(), client))
+
+    result = reconciliation.reconcile_monetary_truth()
+
+    assert result["consistent"] is True
+    assert result["accounts_checked"] == 0
+    assert client.closed is True
+
+
+def test_empty_monetary_mirror_fails_closed_when_tigerbeetle_unavailable(tmp_path, monkeypatch):
+    cfg = _settings(tmp_path)
+    monkeypatch.setattr(db, "settings", cfg)
+    monkeypatch.setattr(reconciliation, "settings", cfg)
+    db.init_db()
+    client = _Client(error=RuntimeError("simulated outage"))
+    monkeypatch.setattr(reconciliation, "_tb_client", lambda: (object(), client))
+
+    result = reconciliation.reconcile_monetary_truth()
+
+    assert result["consistent"] is False
+    assert result["accounts_checked"] == 0
+    assert result["error"] == "tigerbeetle_lookup:RuntimeError"
+    assert client.closed is True
+
+
 def test_reference_ledger_is_not_applicable_without_database_access(monkeypatch):
     cfg = Settings(environment="sandbox", ledger_backend="sqlite")
     monkeypatch.setattr(reconciliation, "settings", cfg)
@@ -150,6 +185,7 @@ async def test_readiness_fails_closed_on_monetary_truth_divergence(monkeypatch):
 
     monkeypatch.setattr(main, "probe_components", healthy_components)
     monkeypatch.setattr(main, "_audit_readiness", lambda: {"valid": True, "events": 1, "broken_at": None})
+    monkeypatch.setattr(main, "_metadata_reconciliation_readiness", lambda: {"balanced": True, "consistent": True, "succeeded_without_journal": 0})
     monkeypatch.setattr(main, "production_readiness", lambda: {"ready_for_live_funds": True, "checks": []})
     monkeypatch.setattr(
         main,
