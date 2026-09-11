@@ -5,10 +5,12 @@ from fastapi import Request
 from starlette.responses import JSONResponse
 
 from .config import settings
+from .security import verify_hmac
+from .webhook import WebhookReplayConflict, begin_webhook_delivery, finish_webhook_delivery
 
 
 _PUBLIC_PRODUCTION_PATHS = {"/health"}
-_WEBHOOK_PREFIX = "/v1/webhooks/"
+_ECOCASH_WEBHOOK_PATH = "/v1/webhooks/ecocash"
 
 
 async def _introspect(token: str) -> dict:
@@ -58,10 +60,43 @@ async def _authorize(principal: dict, request: Request) -> dict:
     return decision
 
 
+async def _production_ecocash_webhook(request: Request, call_next):
+    body = await request.body()
+    signature = request.headers.get("X-EcoCash-Signature", "")
+    if not verify_hmac(body, signature, settings.webhook_secret):
+        return await call_next(request)
+
+    try:
+        delivery_state = begin_webhook_delivery("ecocash", body)
+    except WebhookReplayConflict:
+        return JSONResponse({"detail": "webhook replay conflict"}, status_code=409)
+
+    if delivery_state == "inflight":
+        return JSONResponse(
+            {"detail": "webhook delivery is already processing"},
+            status_code=503,
+            headers={"Retry-After": "5"},
+        )
+
+    response = await call_next(request)
+    if delivery_state == "process":
+        try:
+            finish_webhook_delivery("ecocash", body, response.status_code)
+        except Exception:
+            return JSONResponse(
+                {"detail": "webhook delivery state could not be persisted"},
+                status_code=503,
+                headers={"Retry-After": "5"},
+            )
+    return response
+
+
 async def production_auth_middleware(request: Request, call_next):
     if not settings.is_production:
         return await call_next(request)
-    if request.url.path in _PUBLIC_PRODUCTION_PATHS or request.url.path.startswith(_WEBHOOK_PREFIX):
+    if request.url.path == _ECOCASH_WEBHOOK_PATH:
+        return await _production_ecocash_webhook(request, call_next)
+    if request.url.path in _PUBLIC_PRODUCTION_PATHS:
         return await call_next(request)
 
     authorization = request.headers.get("Authorization", "")

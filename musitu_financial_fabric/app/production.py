@@ -75,11 +75,20 @@ def _evidence_checks(cfg: Settings) -> list[ProductionCheck]:
         ))
 
     scope = str(manifest.get("funds_scope", "")).lower()
+    if cfg.production_mode == "pilot":
+        scope_ok = scope in {"pilot", "production"}
+        scope_message = "authorization scope permits controlled pilot funds activity"
+    elif cfg.production_mode == "live":
+        scope_ok = scope == "production"
+        scope_message = "authorization scope permits unrestricted production funds activity"
+    else:
+        scope_ok = False
+        scope_message = "shadow mode can never be authorized for real-funds activity"
     checks.append(ProductionCheck(
         "authorized_funds_scope",
-        scope in {"pilot", "production"},
+        scope_ok,
         "external",
-        "authorization scope permits controlled real-funds activity" if scope in {"pilot", "production"} else "authorization scope does not permit real funds",
+        scope_message if scope_ok else f"authorization scope {scope or 'none'} does not permit runtime mode {cfg.production_mode}",
     ))
 
     expires_at = manifest.get("expires_at")
@@ -103,7 +112,12 @@ def _evidence_checks(cfg: Settings) -> list[ProductionCheck]:
 def production_checks(cfg: Settings = settings) -> list[ProductionCheck]:
     checks = [
         ProductionCheck("environment", cfg.environment == "production", "software", "runtime environment is production"),
-        ProductionCheck("production_mode", cfg.production_mode in {"shadow", "pilot", "live"}, "software", "production mode is one of shadow/pilot/live"),
+        ProductionCheck(
+            "production_mode",
+            cfg.production_mode in {"pilot", "live"},
+            "software",
+            "live funds require pilot or live mode; shadow mode is observation-only",
+        ),
         ProductionCheck("live_funds_flag", cfg.live_funds_enabled, "software", "live funds flag is explicitly enabled"),
         ProductionCheck("metadata_postgres", cfg.uses_postgres, "software", "production metadata store is PostgreSQL"),
         ProductionCheck("ledger_tigerbeetle", cfg.ledger_backend == "tigerbeetle", "software", "monetary truth backend is TigerBeetle"),
@@ -148,6 +162,8 @@ def enforce_safe_startup(cfg: Settings = settings) -> None:
     if cfg.environment not in {"sandbox", "test", "development", "production"}:
         raise ProductionGateError(f"unsupported MUSITU_ENV: {cfg.environment}")
     if cfg.is_production:
+        if cfg.production_mode not in {"shadow", "pilot", "live"}:
+            raise ProductionGateError("production startup requires MUSITU_PRODUCTION_MODE=shadow, pilot, or live")
         if not cfg.uses_postgres:
             raise ProductionGateError("production startup requires MUSITU_METADATA_DB_URL pointing to PostgreSQL")
         if cfg.ledger_backend != "tigerbeetle":

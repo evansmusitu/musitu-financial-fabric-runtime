@@ -29,6 +29,22 @@ def _base_production(**overrides):
     return Settings(**values)
 
 
+def _approved_manifest(tmp_path, *, funds_scope: str = "pilot") -> tuple[str, str]:
+    manifest = {
+        "funds_scope": funds_scope,
+        "evidence": {
+            "regulator": {"status": "approved", "evidence_ref": "RBZ-REF"},
+            "sponsor_bank": {"status": "approved", "evidence_ref": "BANK-REF"},
+            "data_protection": {"status": "approved", "evidence_ref": "DPA-REF"},
+            "independent_security": {"status": "approved", "evidence_ref": "PENTEST-REF"},
+        },
+    }
+    path = tmp_path / f"authorization-{funds_scope}.json"
+    raw = json.dumps(manifest, sort_keys=True).encode()
+    path.write_bytes(raw)
+    return str(path), hashlib.sha256(raw).hexdigest()
+
+
 def test_live_funds_closed_without_external_evidence():
     cfg = _base_production()
     result = production_readiness(cfg)
@@ -37,22 +53,52 @@ def test_live_funds_closed_without_external_evidence():
         assert_live_funds_allowed(cfg)
 
 
-def test_pinned_approved_manifest_opens_control_gate(tmp_path):
-    manifest = {
-        "funds_scope": "pilot",
-        "evidence": {
-            "regulator": {"status": "approved", "evidence_ref": "RBZ-REF"},
-            "sponsor_bank": {"status": "approved", "evidence_ref": "BANK-REF"},
-            "data_protection": {"status": "approved", "evidence_ref": "DPA-REF"},
-            "independent_security": {"status": "approved", "evidence_ref": "PENTEST-REF"},
-        },
-    }
-    path = tmp_path / "authorization.json"
-    raw = json.dumps(manifest, sort_keys=True).encode()
-    path.write_bytes(raw)
+def test_pinned_approved_manifest_opens_pilot_control_gate(tmp_path):
+    path, digest = _approved_manifest(tmp_path, funds_scope="pilot")
     cfg = _base_production(
-        authorization_manifest_path=str(path),
-        authorization_manifest_sha256=hashlib.sha256(raw).hexdigest(),
+        production_mode="pilot",
+        authorization_manifest_path=path,
+        authorization_manifest_sha256=digest,
+    )
+    assert production_readiness(cfg)["ready_for_live_funds"] is True
+    assert_live_funds_allowed(cfg)
+
+
+def test_shadow_mode_never_opens_live_funds(tmp_path):
+    path, digest = _approved_manifest(tmp_path, funds_scope="production")
+    cfg = _base_production(
+        production_mode="shadow",
+        authorization_manifest_path=path,
+        authorization_manifest_sha256=digest,
+    )
+    result = production_readiness(cfg)
+    assert result["ready_for_live_funds"] is False
+    assert any(row["key"] == "production_mode" and not row["ok"] for row in result["checks"])
+    assert any(row["key"] == "authorized_funds_scope" and not row["ok"] for row in result["checks"])
+    with pytest.raises(ProductionGateError):
+        assert_live_funds_allowed(cfg)
+
+
+def test_pilot_authorization_cannot_open_live_runtime(tmp_path):
+    path, digest = _approved_manifest(tmp_path, funds_scope="pilot")
+    cfg = _base_production(
+        production_mode="live",
+        authorization_manifest_path=path,
+        authorization_manifest_sha256=digest,
+    )
+    result = production_readiness(cfg)
+    assert result["ready_for_live_funds"] is False
+    assert any(row["key"] == "authorized_funds_scope" and not row["ok"] for row in result["checks"])
+    with pytest.raises(ProductionGateError):
+        assert_live_funds_allowed(cfg)
+
+
+def test_production_authorization_can_open_live_runtime(tmp_path):
+    path, digest = _approved_manifest(tmp_path, funds_scope="production")
+    cfg = _base_production(
+        production_mode="live",
+        authorization_manifest_path=path,
+        authorization_manifest_sha256=digest,
     )
     assert production_readiness(cfg)["ready_for_live_funds"] is True
     assert_live_funds_allowed(cfg)
@@ -76,6 +122,12 @@ def test_manifest_tampering_fails_closed(tmp_path):
 def test_production_startup_rejects_sqlite():
     cfg = _base_production(metadata_db_url="")
     with pytest.raises(ProductionGateError, match="PostgreSQL"):
+        enforce_safe_startup(cfg)
+
+
+def test_production_startup_rejects_unknown_mode():
+    cfg = _base_production(production_mode="anything-else", live_funds_enabled=False)
+    with pytest.raises(ProductionGateError, match="MUSITU_PRODUCTION_MODE"):
         enforce_safe_startup(cfg)
 
 
