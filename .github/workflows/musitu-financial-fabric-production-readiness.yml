@@ -13,6 +13,10 @@ on:
 permissions:
   contents: read
 
+env:
+  MUSITU_POSTGRES_CI_IMAGE: postgres@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685
+  MUSITU_TIGERBEETLE_CI_IMAGE: ghcr.io/tigerbeetle/tigerbeetle@sha256:b140e2285fcc1ccd6a7a38a1e31ef13f98c3b511b29acc0a935d597546aa96ff
+
 jobs:
   software-controls:
     runs-on: ubuntu-24.04
@@ -21,8 +25,8 @@ jobs:
       run:
         working-directory: musitu_financial_fabric
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.12'
       - name: Install application and test dependencies
@@ -62,14 +66,14 @@ jobs:
       run:
         working-directory: musitu_financial_fabric
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.12'
       - name: Install application
         run: python -m pip install -e .
       - name: Start PostgreSQL
-        run: docker run -d --name musitu-prod-postgres -e POSTGRES_PASSWORD=musitu-ci -p 5432:5432 postgres:16-alpine
+        run: docker run -d --name musitu-prod-postgres -e POSTGRES_PASSWORD=musitu-ci -p 5432:5432 "$MUSITU_POSTGRES_CI_IMAGE"
       - name: Verify PostgreSQL
         run: |
           for i in {1..60}; do docker exec musitu-prod-postgres pg_isready -U postgres && exit 0 || sleep 1; done
@@ -79,10 +83,10 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/tb-prod"
           docker run --rm --security-opt seccomp=unconfined \
-            -v "$RUNNER_TEMP/tb-prod:/data" ghcr.io/tigerbeetle/tigerbeetle:0.17.8 \
+            -v "$RUNNER_TEMP/tb-prod:/data" "$MUSITU_TIGERBEETLE_CI_IMAGE" \
             format --cluster=1 --replica=0 --replica-count=1 /data/0_0.tigerbeetle
           docker run -d --name musitu-prod-tigerbeetle --security-opt seccomp=unconfined \
-            -p 3000:3000 -v "$RUNNER_TEMP/tb-prod:/data" ghcr.io/tigerbeetle/tigerbeetle:0.17.8 \
+            -p 3000:3000 -v "$RUNNER_TEMP/tb-prod:/data" "$MUSITU_TIGERBEETLE_CI_IMAGE" \
             start --addresses=0.0.0.0:3000 --cache-grid=256MiB /data/0_0.tigerbeetle
           for i in {1..30}; do
             if (echo > /dev/tcp/127.0.0.1/3000) >/dev/null 2>&1; then exit 0; fi
@@ -222,7 +226,7 @@ jobs:
           docker stop musitu-prod-tigerbeetle
           docker rm musitu-prod-tigerbeetle
           docker run -d --name musitu-prod-tigerbeetle --security-opt seccomp=unconfined \
-            -p 3000:3000 -v "$RUNNER_TEMP/tb-prod:/data" ghcr.io/tigerbeetle/tigerbeetle:0.17.8 \
+            -p 3000:3000 -v "$RUNNER_TEMP/tb-prod:/data" "$MUSITU_TIGERBEETLE_CI_IMAGE" \
             start --addresses=0.0.0.0:3000 --cache-grid=256MiB /data/0_0.tigerbeetle
           ready=0
           for i in {1..30}; do
