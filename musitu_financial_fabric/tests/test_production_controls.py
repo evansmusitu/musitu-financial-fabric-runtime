@@ -20,6 +20,7 @@ def _base_production(**overrides):
         production_enabled_currencies=("USD",),
         metadata_db_url="postgresql://musitu:test@127.0.0.1/musitu",
         ledger_backend="tigerbeetle",
+        tigerbeetle_cluster_id=1,
         tigerbeetle_addresses="127.0.0.1:3000",
         auth_introspection_url="https://identity.invalid/introspect",
         auth_client_id="musitu",
@@ -133,6 +134,20 @@ def test_production_authorization_can_open_live_runtime(tmp_path):
     )
     assert production_readiness(cfg)["ready_for_live_funds"] is True
     assert_live_funds_allowed(cfg)
+
+
+def test_live_funds_reject_reserved_tigerbeetle_test_cluster(tmp_path):
+    path, digest = _approved_manifest(tmp_path)
+    cfg = _base_production(
+        tigerbeetle_cluster_id=0,
+        authorization_manifest_path=path,
+        authorization_manifest_sha256=digest,
+    )
+    result = production_readiness(cfg)
+    assert result["ready_for_live_funds"] is False
+    assert any(row["key"] == "tigerbeetle_cluster_id" and not row["ok"] for row in result["checks"])
+    with pytest.raises(ProductionGateError, match="tigerbeetle_cluster_id"):
+        assert_live_funds_allowed(cfg)
 
 
 def test_live_funds_require_an_implemented_enabled_rail(tmp_path):
@@ -253,6 +268,12 @@ def test_production_startup_rejects_sqlite():
 def test_production_startup_rejects_unknown_mode():
     cfg = _base_production(production_mode="anything-else", live_funds_enabled=False)
     with pytest.raises(ProductionGateError, match="MUSITU_PRODUCTION_MODE"):
+        enforce_safe_startup(cfg)
+
+
+def test_production_startup_rejects_reserved_tigerbeetle_test_cluster():
+    cfg = _base_production(tigerbeetle_cluster_id=0, live_funds_enabled=False)
+    with pytest.raises(ProductionGateError, match="cluster 0 is reserved"):
         enforce_safe_startup(cfg)
 
 

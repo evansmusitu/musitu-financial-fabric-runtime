@@ -38,6 +38,7 @@ jobs:
           MUSITU_PRODUCTION_MODE: pilot
           MUSITU_METADATA_DB_URL: postgresql://user:pass@127.0.0.1/musitu
           MUSITU_LEDGER_BACKEND: tigerbeetle
+          MUSITU_TIGERBEETLE_CLUSTER_ID: '1'
           MUSITU_TIGERBEETLE_ADDRESSES: 127.0.0.1:3000
           MUSITU_AUTH_INTROSPECTION_URL: https://identity.invalid/introspect
           MUSITU_AUTH_CLIENT_ID: musitu
@@ -79,7 +80,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/tb-prod"
           docker run --rm --security-opt seccomp=unconfined \
             -v "$RUNNER_TEMP/tb-prod:/data" ghcr.io/tigerbeetle/tigerbeetle:0.17.8 \
-            format --cluster=0 --replica=0 --replica-count=1 /data/0_0.tigerbeetle
+            format --cluster=1 --replica=0 --replica-count=1 /data/0_0.tigerbeetle
           docker run -d --name musitu-prod-tigerbeetle --security-opt seccomp=unconfined \
             -p 3000:3000 -v "$RUNNER_TEMP/tb-prod:/data" ghcr.io/tigerbeetle/tigerbeetle:0.17.8 \
             start --addresses=0.0.0.0:3000 --cache-grid=256MiB /data/0_0.tigerbeetle
@@ -96,7 +97,7 @@ jobs:
           MUSITU_PRODUCTION_MODE: shadow
           MUSITU_METADATA_DB_URL: postgresql://postgres:musitu-ci@127.0.0.1:5432/postgres
           MUSITU_LEDGER_BACKEND: tigerbeetle
-          MUSITU_TIGERBEETLE_CLUSTER_ID: '0'
+          MUSITU_TIGERBEETLE_CLUSTER_ID: '1'
           MUSITU_TIGERBEETLE_ADDRESSES: 127.0.0.1:3000
           MUSITU_AUTH_INTROSPECTION_URL: https://identity.invalid/introspect
           MUSITU_AUTH_CLIENT_ID: musitu
@@ -136,7 +137,7 @@ jobs:
           MUSITU_PRODUCTION_MODE: shadow
           MUSITU_METADATA_DB_URL: postgresql://postgres:musitu-ci@127.0.0.1:5432/postgres
           MUSITU_LEDGER_BACKEND: tigerbeetle
-          MUSITU_TIGERBEETLE_CLUSTER_ID: '0'
+          MUSITU_TIGERBEETLE_CLUSTER_ID: '1'
           MUSITU_TIGERBEETLE_ADDRESSES: 127.0.0.1:3000
           MUSITU_AUTH_INTROSPECTION_URL: https://identity.invalid/introspect
           MUSITU_AUTH_CLIENT_ID: musitu
@@ -186,7 +187,7 @@ jobs:
           MUSITU_PRODUCTION_MODE: shadow
           MUSITU_METADATA_DB_URL: postgresql://postgres:musitu-ci@127.0.0.1:5432/musitu_restore
           MUSITU_LEDGER_BACKEND: tigerbeetle
-          MUSITU_TIGERBEETLE_CLUSTER_ID: '0'
+          MUSITU_TIGERBEETLE_CLUSTER_ID: '1'
           MUSITU_TIGERBEETLE_ADDRESSES: 127.0.0.1:3000
           MUSITU_AUTH_INTROSPECTION_URL: https://identity.invalid/introspect
           MUSITU_AUTH_CLIENT_ID: musitu
@@ -209,7 +210,7 @@ jobs:
           MUSITU_PRODUCTION_MODE: shadow
           MUSITU_METADATA_DB_URL: postgresql://postgres:musitu-ci@127.0.0.1:5432/postgres
           MUSITU_LEDGER_BACKEND: tigerbeetle
-          MUSITU_TIGERBEETLE_CLUSTER_ID: '0'
+          MUSITU_TIGERBEETLE_CLUSTER_ID: '1'
           MUSITU_TIGERBEETLE_ADDRESSES: 127.0.0.1:3000
           MUSITU_AUTH_INTROSPECTION_URL: https://identity.invalid/introspect
           MUSITU_AUTH_CLIENT_ID: musitu
