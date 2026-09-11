@@ -2,7 +2,7 @@ name: MUSITU Financial Fabric — Gazelle Network Lab
 
 on:
   push:
-    branches: [musitu-financial-fabric]
+    branches: [musitu-financial-fabric, musitu-financial-fabric-production-readiness]
     paths:
       - 'control/musitu-financial-fabric/**'
       - '.github/workflows/musitu-financial-fabric-*.yml'
@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Runner capacity
         run: |
@@ -58,11 +58,23 @@ jobs:
             exit 1
           fi
 
-      - name: Acquire Mifos Gazelle v2 deployment source
-        run: git clone --depth 1 --branch main https://github.com/openMF/mifos-gazelle.git /tmp/mifos-gazelle
+      - name: Acquire pinned Mifos Gazelle v2 deployment source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init /tmp/mifos-gazelle
+          git -C /tmp/mifos-gazelle remote add origin https://github.com/openMF/mifos-gazelle.git
+          git -C /tmp/mifos-gazelle fetch --depth 1 origin 2b823e2948d7da9362fd8bc41adefaf46e4c2907
+          git -C /tmp/mifos-gazelle checkout --detach FETCH_HEAD
 
-      - name: Record exact upstream revision
-        run: git -C /tmp/mifos-gazelle rev-parse HEAD | tee /tmp/gazelle.sha
+      - name: Verify exact upstream revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected=2b823e2948d7da9362fd8bc41adefaf46e4c2907
+          actual="$(git -C /tmp/mifos-gazelle rev-parse HEAD)"
+          test "$actual" = "$expected"
+          printf '%s\n' "$actual" | tee /tmp/gazelle.sha
 
       - name: Reduce PaymentHub CPU reservations for hosted-runner sandbox
         shell: bash
@@ -412,7 +424,7 @@ jobs:
       - name: Upload evidence
         if: always()
         continue-on-error: true
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: musitu-gazelle-evidence
           path: |
