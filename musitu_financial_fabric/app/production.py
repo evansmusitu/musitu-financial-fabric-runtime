@@ -7,6 +7,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, urlparse
 
 from .config import Settings, settings
 
@@ -26,6 +27,46 @@ class ProductionCheck:
 _REQUIRED_EVIDENCE = ("regulator", "sponsor_bank", "data_protection", "independent_security", "rail_provider")
 _PRODUCTION_IMPLEMENTED_RAILS = {"ecocash"}
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
+_SECURE_POSTGRES_SSLMODES = {"require", "verify-ca", "verify-full"}
+
+
+def _parsed_service_url(value: str):
+    try:
+        parsed = urlparse(value)
+    except Exception:
+        return None
+    if not parsed.scheme or not parsed.hostname or parsed.username or parsed.password:
+        return None
+    return parsed
+
+
+def _secure_or_loopback_service_url(value: str) -> bool:
+    parsed = _parsed_service_url(value)
+    if parsed is None:
+        return False
+    if parsed.scheme.lower() == "https":
+        return True
+    return parsed.scheme.lower() == "http" and parsed.hostname.lower() in _LOOPBACK_HOSTS
+
+
+def _secure_external_url(value: str) -> bool:
+    parsed = _parsed_service_url(value)
+    return bool(parsed is not None and parsed.scheme.lower() == "https")
+
+
+def _postgres_transport_secure(value: str) -> bool:
+    try:
+        parsed = urlparse(value)
+    except Exception:
+        return False
+    if parsed.scheme.lower() not in {"postgresql", "postgres"} or not parsed.hostname:
+        return False
+    if parsed.hostname.lower() in _LOOPBACK_HOSTS:
+        return True
+    query = parse_qs(parsed.query)
+    sslmode = str((query.get("sslmode") or [""])[0]).strip().lower()
+    return sslmode in _SECURE_POSTGRES_SSLMODES
 
 
 def _authorization_manifest(cfg: Settings) -> tuple[dict[str, Any] | None, str | None]:
@@ -174,6 +215,11 @@ def production_checks(cfg: Settings = settings) -> list[ProductionCheck]:
         cfg.ecocash_client_id,
         cfg.ecocash_client_secret,
     ])
+    metadata_transport_ok = _postgres_transport_secure(cfg.metadata_db_url)
+    introspection_transport_ok = _secure_or_loopback_service_url(cfg.auth_introspection_url)
+    authz_transport_ok = _secure_or_loopback_service_url(cfg.authz_gate_url)
+    risk_transport_ok = _secure_or_loopback_service_url(cfg.risk_gate_url)
+    ecocash_transport_ok = (not ecocash_enabled) or _secure_external_url(cfg.ecocash_api_base)
 
     checks = [
         ProductionCheck("environment", cfg.environment == "production", "software", "runtime environment is production"),
@@ -185,6 +231,7 @@ def production_checks(cfg: Settings = settings) -> list[ProductionCheck]:
         ),
         ProductionCheck("live_funds_flag", cfg.live_funds_enabled, "software", "live funds flag is explicitly enabled"),
         ProductionCheck("metadata_postgres", cfg.uses_postgres, "software", "production metadata store is PostgreSQL"),
+        ProductionCheck("metadata_transport", metadata_transport_ok, "software", "remote PostgreSQL requires explicit TLS; loopback is allowed for local deployment/testing"),
         ProductionCheck("ledger_tigerbeetle", cfg.ledger_backend == "tigerbeetle", "software", "monetary truth backend is TigerBeetle"),
         ProductionCheck("tigerbeetle_addresses", bool(cfg.tigerbeetle_addresses), "software", "TigerBeetle replica addresses are configured"),
         ProductionCheck(
@@ -217,14 +264,18 @@ def production_checks(cfg: Settings = settings) -> list[ProductionCheck]:
             "software",
             "EcoCash production credentials and exact endpoint configuration are present when the rail is enabled",
         ),
+        ProductionCheck("ecocash_transport", ecocash_transport_ok, "software", "EcoCash production API transport is HTTPS"),
         ProductionCheck(
             "api_auth",
             all([cfg.auth_introspection_url, cfg.auth_client_id, cfg.auth_client_secret]),
             "software",
             "production bearer-token introspection is configured",
         ),
+        ProductionCheck("auth_introspection_transport", introspection_transport_ok, "software", "identity introspection uses HTTPS or a loopback sidecar"),
         ProductionCheck("authz_gate", bool(cfg.authz_gate_url), "software", "OpenFGA/OPA authorization decision gate is configured"),
+        ProductionCheck("authz_transport", authz_transport_ok, "software", "authorization gate uses HTTPS or a loopback sidecar"),
         ProductionCheck("risk_gate", bool(cfg.risk_gate_url), "software", "production risk/compliance decision gate is configured"),
+        ProductionCheck("risk_transport", risk_transport_ok, "software", "risk gate uses HTTPS or a loopback sidecar"),
         ProductionCheck(
             "webhook_secret",
             len(cfg.webhook_secret) >= 32 and cfg.webhook_secret != "sandbox-secret-change-me",
@@ -261,16 +312,26 @@ def enforce_safe_startup(cfg: Settings = settings) -> None:
             raise ProductionGateError("production startup requires MUSITU_PRODUCTION_MODE=shadow, pilot, or live")
         if not cfg.uses_postgres:
             raise ProductionGateError("production startup requires MUSITU_METADATA_DB_URL pointing to PostgreSQL")
+        if not _postgres_transport_secure(cfg.metadata_db_url):
+            raise ProductionGateError("production startup requires explicit TLS for remote PostgreSQL or loopback transport")
         if cfg.ledger_backend != "tigerbeetle":
             raise ProductionGateError("production startup requires MUSITU_LEDGER_BACKEND=tigerbeetle")
         if not cfg.tigerbeetle_addresses:
             raise ProductionGateError("production startup requires TigerBeetle replica addresses")
         if not all([cfg.auth_introspection_url, cfg.auth_client_id, cfg.auth_client_secret]):
             raise ProductionGateError("production startup requires bearer-token introspection configuration")
+        if not _secure_or_loopback_service_url(cfg.auth_introspection_url):
+            raise ProductionGateError("production identity introspection requires HTTPS or a loopback sidecar")
         if not cfg.authz_gate_url:
             raise ProductionGateError("production startup requires an OpenFGA/OPA authorization decision gate")
+        if not _secure_or_loopback_service_url(cfg.authz_gate_url):
+            raise ProductionGateError("production authorization gate requires HTTPS or a loopback sidecar")
         if not cfg.risk_gate_url:
             raise ProductionGateError("production startup requires a risk/compliance decision gate")
+        if not _secure_or_loopback_service_url(cfg.risk_gate_url):
+            raise ProductionGateError("production risk gate requires HTTPS or a loopback sidecar")
+        if "ecocash" in set(cfg.production_enabled_rails) and cfg.ecocash_api_base and not _secure_external_url(cfg.ecocash_api_base):
+            raise ProductionGateError("production EcoCash API requires HTTPS")
         if len(cfg.webhook_secret) < 32 or cfg.webhook_secret == "sandbox-secret-change-me":
             raise ProductionGateError("production startup requires a strong non-default webhook secret")
         if cfg.live_funds_enabled:
