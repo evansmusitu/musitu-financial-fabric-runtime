@@ -63,7 +63,7 @@ jobs:
           PY
           grep -F 'bash /seed_superposition.sh' docker-compose.yml
           grep -F 'MUSITU_CI_PRESERVE_FAILED_STACK' scripts/setup.sh
-      - name: Remove only the proven redundant Diesel patch hunk
+      - name: Adapt only the stale Diesel allow-list hunk
         working-directory: /tmp/hyperswitch
         run: |
           python - <<'PY'
@@ -79,16 +79,20 @@ jobs:
 
           stale_hunk = b'''@@ -1982,6 +1999,7 @@\n     api_keys,\n     authentication,\n     batch_blocklist_jobs,\n+    blocklist,\n     blocklist_fingerprint,\n     blocklist_lookup,\n     business_profile,\n'''
           if raw.count(stale_hunk) != 1 or not raw.endswith(stale_hunk):
-              raise SystemExit('Proven stale hunk signature changed; refusing workaround')
-          patched = raw[:-len(stale_hunk)]
-          patch.write_bytes(patched)
-          print('Removed exactly redundant hunk #5; hunks #1-#4 remain intact')
+              raise SystemExit('Upstream stale hunk signature changed; refusing workaround')
+
+          generated = b'    address,api_keys,authentication,batch_blocklist_jobs,blocklist_fingerprint,blocklist_lookup,business_profile,callback_mapper,captures,card_issuers,cards_info,configs,customers,dashboard_metadata,dispute,dynamic_routing_stats,events,file_metadata,fraud_check,gateway_status_map,generic_link,incremental_authorization,invoice,locker_mock_up,mandate,merchant_account,merchant_connector_account,merchant_key_store,organization,payment_attempt,payment_intent,payment_link,payment_methods,payout_attempt,payouts,process_tracker,refund,relay,reverse_lookup,roles,routing_algorithm,subscription,themes,unified_translations,user_authentication_methods,user_key_store,user_roles,users,);'
+          corrected = generated.replace(
+              b'batch_blocklist_jobs,blocklist_fingerprint',
+              b'batch_blocklist_jobs,blocklist,blocklist_fingerprint',
+              1,
+          )
+          replacement_hunk = b'@@ -1939 +1956 @@\n-' + generated + b'\n+' + corrected + b'\n'
+          patch.write_bytes(raw[:-len(stale_hunk)] + replacement_hunk)
+          print('Replaced exactly stale hunk #5 with an equivalent hunk for current Diesel output; hunks #1-#4 unchanged')
           PY
           grep -F 'blocklist_fingerprint (merchant_id, fingerprint_id)' crates/diesel_models/drop_id.patch
-          if grep -Fq '@@ -1982,6 +1999,7 @@' crates/diesel_models/drop_id.patch; then
-            echo 'stale hunk still present' >&2
-            exit 1
-          fi
+          grep -F 'batch_blocklist_jobs,blocklist,blocklist_fingerprint' crates/diesel_models/drop_id.patch
       - name: Start official standalone stack
         working-directory: /tmp/hyperswitch
         env:
@@ -98,20 +102,30 @@ jobs:
         working-directory: /tmp/hyperswitch
         run: |
           python - <<'PY'
+          import re
           from pathlib import Path
+
           s = Path('crates/diesel_models/src/schema.rs').read_text()
-          required = [
+          definitions = [
               'blocklist (merchant_id, fingerprint_id)',
               'blocklist_fingerprint (merchant_id, fingerprint_id)',
               'blocklist_lookup (merchant_id, fingerprint)',
               'configs (key)',
               'locker_mock_up (card_id)',
-              'batch_blocklist_jobs,\n    blocklist,\n    blocklist_fingerprint,',
           ]
-          missing = [item for item in required if item not in s]
-          if missing:
-              raise SystemExit(f'Generated Diesel schema invariant missing: {missing}')
-          print('Generated Diesel schema contains all required post-patch invariants')
+          missing_definitions = [item for item in definitions if item not in s]
+          if missing_definitions:
+              raise SystemExit(f'Generated Diesel schema definition invariant missing: {missing_definitions}')
+
+          match = re.search(r'diesel::allow_tables_to_appear_in_same_query!\((.*?)\);', s, re.S)
+          if match is None:
+              raise SystemExit('Generated Diesel allow-list macro not found')
+          allowed = {item.strip() for item in match.group(1).split(',') if item.strip()}
+          required_allowed = {'batch_blocklist_jobs', 'blocklist', 'blocklist_fingerprint', 'blocklist_lookup'}
+          missing_allowed = sorted(required_allowed - allowed)
+          if missing_allowed:
+              raise SystemExit(f'Generated Diesel allow-list invariant missing: {missing_allowed}')
+          print('Generated Diesel schema contains all required post-patch definitions and allow-list members')
           PY
       - name: Verify Hyperswitch health and deep readiness
         run: |
