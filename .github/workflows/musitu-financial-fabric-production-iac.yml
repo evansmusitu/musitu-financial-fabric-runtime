@@ -19,8 +19,8 @@ jobs:
       run:
         working-directory: musitu_financial_fabric
     steps:
-      - uses: actions/checkout@v4
-      - uses: opentofu/setup-opentofu@v1
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: opentofu/setup-opentofu@9d84900f3238fab8cd84ce47d658d25dd008be2f # v1
       - name: Validate production infrastructure guard
         run: |
           tofu -chdir=infra init -backend=false
