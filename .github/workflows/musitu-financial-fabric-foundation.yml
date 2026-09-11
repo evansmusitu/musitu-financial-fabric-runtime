@@ -2,7 +2,7 @@ name: MUSITU Financial Fabric — Foundation Runtimes
 
 on:
   push:
-    branches: [musitu-financial-fabric]
+    branches: [musitu-financial-fabric, musitu-financial-fabric-production-readiness]
     paths:
       - 'control/musitu-financial-fabric/**'
       - '.github/workflows/musitu-financial-fabric-*.yml'
@@ -11,11 +11,15 @@ on:
 permissions:
   contents: read
 
+env:
+  MUSITU_POSTGRES_CI_IMAGE: postgres@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685
+  MUSITU_TIGERBEETLE_CI_IMAGE: ghcr.io/tigerbeetle/tigerbeetle@sha256:b140e2285fcc1ccd6a7a38a1e31ef13f98c3b511b29acc0a935d597546aa96ff
+
 jobs:
   manifest:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Verify mandatory manifest
         run: |
           python - <<'PY'
@@ -30,15 +34,15 @@ jobs:
   tigerbeetle:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - name: Start TigerBeetle
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Start pinned TigerBeetle
         run: |
           mkdir -p "$RUNNER_TEMP/tb-data"
           docker run --rm --security-opt seccomp=unconfined \
-            -v "$RUNNER_TEMP/tb-data:/data" ghcr.io/tigerbeetle/tigerbeetle \
+            -v "$RUNNER_TEMP/tb-data:/data" "$MUSITU_TIGERBEETLE_CI_IMAGE" \
             format --cluster=0 --replica=0 --replica-count=1 /data/0_0.tigerbeetle
           docker run -d --name musitu-tigerbeetle --security-opt seccomp=unconfined \
-            -p 3000:3000 -v "$RUNNER_TEMP/tb-data:/data" ghcr.io/tigerbeetle/tigerbeetle \
+            -p 3000:3000 -v "$RUNNER_TEMP/tb-data:/data" "$MUSITU_TIGERBEETLE_CI_IMAGE" \
             start --addresses=0.0.0.0:3000 --cache-grid=256MiB /data/0_0.tigerbeetle
       - name: Verify TigerBeetle socket
         run: |
@@ -52,9 +56,9 @@ jobs:
   data-event-policy:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Start PostgreSQL
-        run: docker run -d --name musitu-postgres -e POSTGRES_PASSWORD=musitu-ci -p 5432:5432 postgres:16-alpine
+        run: docker run -d --name musitu-postgres -e POSTGRES_PASSWORD=musitu-ci -p 5432:5432 "$MUSITU_POSTGRES_CI_IMAGE"
       - name: Start NATS JetStream
         run: docker run -d --name musitu-nats -p 4222:4222 -p 8222:8222 nats:2.10-alpine -js -m 8222
       - name: Start Valkey
@@ -74,21 +78,37 @@ jobs:
           curl -fsS http://127.0.0.1:8123/ping | grep -q Ok
           for i in {1..30}; do curl -fsS http://127.0.0.1:8181/health && break || sleep 1; done
           curl -fsS http://127.0.0.1:8181/health
+      - name: Capture resolved foundation image identities
+        if: always()
+        run: |
+          for name in musitu-postgres musitu-nats musitu-valkey musitu-clickhouse musitu-opa; do
+            image="$(docker inspect "$name" --format '{{.Config.Image}}' 2>/dev/null || true)"
+            [ -n "$image" ] || continue
+            printf '%s %s ' "$name" "$image"
+            docker image inspect "$image" --format '{{json .RepoDigests}}' || true
+          done | tee /tmp/musitu-foundation-image-identities.txt
 
   tooling:
     runs-on: ubuntu-24.04
+    env:
+      OPENAPI_GENERATOR_VERSION: '7.24.0'
+      SCARF_ANALYTICS: 'false'
     steps:
-      - uses: actions/checkout@v4
-      - uses: sigstore/cosign-installer@v3
-      - uses: opentofu/setup-opentofu@v1
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: sigstore/cosign-installer@e78d7d0ad4827834deec3f34fd24767f9f9b8f2b # v3
+      - uses: opentofu/setup-opentofu@9d84900f3238fab8cd84ce47d658d25dd008be2f # v1
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'
-      - name: Install API tooling
-        run: npm install -g @openapitools/openapi-generator-cli @stoplight/prism-cli
-      - name: Verify tooling
+      - name: Install API tooling at exact versions
+        run: npm install -g @openapitools/openapi-generator-cli@2.41.0 @stoplight/prism-cli@5.16.0
+      - name: Verify tooling identities
         run: |
           cosign version
           tofu version
-          openapi-generator-cli version
+          npm list -g --depth=0 | tee /tmp/musitu-foundation-global-npm.txt
+          grep -F '@openapitools/openapi-generator-cli@2.41.0' /tmp/musitu-foundation-global-npm.txt
+          grep -F '@stoplight/prism-cli@5.16.0' /tmp/musitu-foundation-global-npm.txt
+          generator_version="$(openapi-generator-cli version | tail -n 1 | tr -d '\r')"
+          test "$generator_version" = "$OPENAPI_GENERATOR_VERSION"
           prism --version
