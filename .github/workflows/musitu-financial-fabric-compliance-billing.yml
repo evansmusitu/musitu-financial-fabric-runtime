@@ -12,6 +12,7 @@ permissions:
   contents: read
 
 env:
+  MUSITU_WATCHMAN_CI_IMAGE: moov/watchman:v2-static@sha256:093c40cbbde3f7d8e4fdb6b393b57232f1f36b526372f175094f7fd8af391dd9
   TAZAMA_UPSTREAM_SHA: 83e4b12c16986aedfff843ed84b7045ac912ec0a
   KILLBILL_CLOUD_UPSTREAM_SHA: 18e950df7684032bdac16c66a7cc48f5d1fd6650
 
@@ -20,8 +21,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Start deterministic Watchman static dataset
-        run: docker run -d --name musitu-watchman -p 8084:8084 moov/watchman:v2-static
+      - name: Start deterministic pinned Watchman static dataset
+        run: docker run -d --name musitu-watchman -p 8084:8084 "$MUSITU_WATCHMAN_CI_IMAGE"
       - name: Verify Watchman search API
         run: |
           ok=0
@@ -39,9 +40,12 @@ jobs:
           if isinstance(p, dict):
               assert not p.get('error'), p
           PY
-      - name: Capture Watchman image identity
+      - name: Verify Watchman image identity
         if: always()
-        run: docker image inspect moov/watchman:v2-static --format '{{json .RepoDigests}}' | tee /tmp/watchman-image-digests.txt || true
+        run: |
+          test "$(docker inspect musitu-watchman --format '{{.Config.Image}}')" = "$MUSITU_WATCHMAN_CI_IMAGE"
+          docker image inspect "$MUSITU_WATCHMAN_CI_IMAGE" --format '{{json .RepoDigests}}' | tee /tmp/watchman-image-digests.txt
+          grep -F 'sha256:093c40cbbde3f7d8e4fdb6b393b57232f1f36b526372f175094f7fd8af391dd9' /tmp/watchman-image-digests.txt
       - name: Upload Watchman evidence
         if: always()
         continue-on-error: true
