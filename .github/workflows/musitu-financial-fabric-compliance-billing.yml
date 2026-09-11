@@ -96,12 +96,9 @@ jobs:
         run: git clone --depth 1 https://github.com/killbill/killbill-cloud.git /tmp/killbill-cloud
       - name: Record Kill Bill deployment revision
         run: git -C /tmp/killbill-cloud rev-parse HEAD | tee /tmp/killbill-cloud.sha
-      - name: Pin Kill Bill to preinstalled official release image
-        working-directory: /tmp/killbill-cloud
-        run: sed -i 's#image: killbill/killbill:latest#image: killbill/killbill:0.24.21#' docker/compose/docker-compose.kb.yml
       - name: Start official Kill Bill stack
         working-directory: /tmp/killbill-cloud
-        run: docker compose -f docker/compose/docker-compose.kb.yml up -d
+        run: docker compose -f docker/compose/docker-compose.kb.yml -f $GITHUB_WORKSPACE/control/musitu-financial-fabric/killbill-compose.override.yml up -d
       - name: Verify Kill Bill core API
         run: |
           ok=0
@@ -111,7 +108,7 @@ jobs:
             sleep 2
           done
           if [ "$ok" != 1 ]; then
-            docker compose -f /tmp/killbill-cloud/docker/compose/docker-compose.kb.yml logs --no-color
+            docker compose -f /tmp/killbill-cloud/docker/compose/docker-compose.kb.yml -f $GITHUB_WORKSPACE/control/musitu-financial-fabric/killbill-compose.override.yml logs --no-color
             exit 1
           fi
           cat /tmp/killbill-nodes.json
