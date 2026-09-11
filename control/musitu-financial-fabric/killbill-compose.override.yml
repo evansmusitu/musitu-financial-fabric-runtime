@@ -1,3 +1,4 @@
+# Official preinstalled Kill Bill release used to avoid the failing latest-image runtime KPM bootstrap path.
 services:
   killbill:
     image: killbill/killbill:0.24.21
