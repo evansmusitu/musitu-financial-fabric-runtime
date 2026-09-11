@@ -9,7 +9,7 @@ from .security import verify_hmac
 from .webhook import WebhookReplayConflict, begin_webhook_delivery, finish_webhook_delivery
 
 
-_PUBLIC_PRODUCTION_PATHS = {"/health"}
+_PUBLIC_PRODUCTION_PATHS = {"/health", "/ready"}
 _ECOCASH_WEBHOOK_PATH = "/v1/webhooks/ecocash"
 
 

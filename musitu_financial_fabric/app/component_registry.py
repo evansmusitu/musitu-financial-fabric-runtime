@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import asdict, dataclass
 import os
 from typing import Iterable
@@ -71,21 +72,37 @@ def component_manifest() -> list[dict]:
 
 
 async def probe_components(components: Iterable[Component] = COMPONENTS) -> dict:
-    rows: list[dict] = []
+    ordered = tuple(components)
+
     async with httpx.AsyncClient(timeout=2.5, follow_redirects=True) as client:
-        for c in components:
+        async def probe(c: Component) -> dict:
             if c.kind in {"protocol", "tooling", "native"}:
-                rows.append({"key": c.key, "name": c.name, "required": c.required, "state": "declared", "kind": c.kind})
-                continue
+                return {"key": c.key, "name": c.name, "required": c.required, "state": "declared", "kind": c.kind}
             url = os.getenv(c.health_env, "") if c.health_env else ""
             if not url:
-                rows.append({"key": c.key, "name": c.name, "required": c.required, "state": "unconfigured", "kind": c.kind})
-                continue
+                return {"key": c.key, "name": c.name, "required": c.required, "state": "unconfigured", "kind": c.kind}
             try:
                 response = await client.get(url)
-                rows.append({"key": c.key, "name": c.name, "required": c.required, "state": "healthy" if 200 <= response.status_code < 300 else "unhealthy", "status_code": response.status_code, "kind": c.kind})
+                return {
+                    "key": c.key,
+                    "name": c.name,
+                    "required": c.required,
+                    "state": "healthy" if 200 <= response.status_code < 300 else "unhealthy",
+                    "status_code": response.status_code,
+                    "kind": c.kind,
+                }
             except Exception as exc:
-                rows.append({"key": c.key, "name": c.name, "required": c.required, "state": "unreachable", "error": type(exc).__name__, "kind": c.kind})
+                return {
+                    "key": c.key,
+                    "name": c.name,
+                    "required": c.required,
+                    "state": "unreachable",
+                    "error": type(exc).__name__,
+                    "kind": c.kind,
+                }
+
+        rows = list(await asyncio.gather(*(probe(c) for c in ordered)))
+
     runtime_required = [r for r in rows if r["required"] and r["kind"] == "runtime"]
     return {
         "all_required_runtime_healthy": bool(runtime_required) and all(r["state"] == "healthy" for r in runtime_required),

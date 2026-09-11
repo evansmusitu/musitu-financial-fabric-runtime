@@ -84,14 +84,52 @@ class ProtocolPaymentEnvelope(BaseModel):
     rail: str = "auto"
 
 
+def _audit_readiness() -> dict:
+    try:
+        valid, count, broken_at = verify_audit_chain()
+        return {"valid": valid, "events": count, "broken_at": broken_at}
+    except Exception as exc:
+        return {"valid": False, "events": None, "broken_at": None, "error": type(exc).__name__}
+
+
+async def _readiness_snapshot() -> dict:
+    components = await probe_components()
+    audit = _audit_readiness()
+    production = production_readiness() if settings.is_production else {"ready_for_live_funds": False, "checks": []}
+    service_ready = bool(components["all_required_runtime_healthy"] and audit["valid"])
+    live_funds_ready = bool(
+        settings.is_production
+        and settings.live_funds_enabled
+        and production["ready_for_live_funds"]
+        and service_ready
+    )
+    return {
+        **components,
+        "audit": audit,
+        "service_ready": service_ready,
+        "sandbox_api_operational": not settings.is_production,
+        "production": production,
+        "production_funds_gate": live_funds_ready,
+    }
+
+
 @app.get("/health")
 def health():
-    gate = production_readiness() if settings.is_production else {"ready_for_live_funds": False, "checks": []}
     return {
-        "status": "ok", "environment": settings.environment, "production_mode": settings.production_mode,
-        "live_funds_enabled": settings.live_funds_enabled, "ready_for_live_funds": gate["ready_for_live_funds"],
-        "custody_mode": "disabled" if not gate["ready_for_live_funds"] else "externally-authorized", "fabric_version": "0.3.0",
+        "status": "ok",
+        "environment": settings.environment,
+        "production_mode": settings.production_mode,
+        "live_funds_enabled": settings.live_funds_enabled,
+        "fabric_version": "0.3.0",
     }
+
+
+@app.get("/ready")
+async def ready():
+    snapshot = await _readiness_snapshot()
+    if not snapshot["service_ready"]:
+        return JSONResponse(snapshot, status_code=503)
+    return snapshot
 
 
 @app.get("/v1/fabric/components")
@@ -101,12 +139,7 @@ def fabric_components():
 
 @app.get("/v1/fabric/readiness")
 async def fabric_readiness():
-    result = await probe_components()
-    production = production_readiness() if settings.is_production else {"ready_for_live_funds": False, "checks": []}
-    result["sandbox_api_operational"] = not settings.is_production
-    result["production"] = production
-    result["production_funds_gate"] = bool(production["ready_for_live_funds"])
-    return result
+    return await _readiness_snapshot()
 
 
 @app.post("/v1/identities")
