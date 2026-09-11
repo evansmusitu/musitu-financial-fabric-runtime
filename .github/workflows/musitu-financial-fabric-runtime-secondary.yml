@@ -2,7 +2,7 @@ name: MUSITU Financial Fabric — Secondary Runtimes
 
 on:
   push:
-    branches: [musitu-financial-fabric]
+    branches: [musitu-financial-fabric, musitu-financial-fabric-production-readiness]
     paths:
       - 'control/musitu-financial-fabric/**'
       - '.github/workflows/musitu-financial-fabric-runtime-secondary.yml'
@@ -11,46 +11,69 @@ on:
 permissions:
   contents: read
 
+env:
+  MUSITU_TEMPORAL_CI_IMAGE: temporalio/temporal:latest@sha256:cea463d98a8d6def4420f903ea5c3fcd0d85c8d10fbcc2770a50c12fff2eb26d
+  SPIRE_UPSTREAM_SHA: 2f7861ae3923caf1f57eb087fc2928d58c0fb1d2
+  MUSITU_SPIRE_CI_IMAGE: ghcr.io/spiffe/spire-server:1.15.3@sha256:4082f30d3e0ddc4000a171392c4ea174345ee44d161ee917c70b97b2ecfba141
+  MUSITU_ENVOY_CI_IMAGE: envoyproxy/envoy:v1.39.1@sha256:57e14a549d7bd43c8d3f6d03e8cfa653e037d4b38e133acd9b54f38c524401b4
+  CORAZA_UPSTREAM_SHA: 92d33e6affaaa487ce6dd12da0c6943bb176ef98
+  CORAZA_GO_VERSION: '1.27.1'
+  CORAZA_XCADDY_VERSION: v0.4.7
+  CORAZA_CADDY_VERSION: v2.11.4
+  CORAZA_DEBIAN_BASE: debian@sha256:f324c7ff54321e8d9c588493a20244965938ce0aa50bbd1022d38010e9ffc4b1
+  CORAZA_HTTPBIN_IMAGE: mccutchen/go-httpbin:2.25.0@sha256:7aa3e3b544ca09a0c14328642fdc273e55744b7bf484baab2a03f27e325c07e3
+
 jobs:
   temporal:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - name: Start Temporal development server
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Start pinned Temporal development server
         run: |
           docker run -d --name musitu-temporal -p 7233:7233 -p 8233:8233 \
-            temporalio/temporal:latest server start-dev --ip 0.0.0.0
-      - name: Verify Temporal UI and frontend
+            "$MUSITU_TEMPORAL_CI_IMAGE" server start-dev --ip 0.0.0.0
+      - name: Verify Temporal UI, frontend, and image identity
         run: |
           for i in {1..90}; do curl -fsS http://127.0.0.1:8233/ >/tmp/temporal-ui.html && break || sleep 1; done
           test -s /tmp/temporal-ui.html
           (echo > /dev/tcp/127.0.0.1/7233)
+          test "$(docker inspect musitu-temporal --format '{{.Config.Image}}')" = "$MUSITU_TEMPORAL_CI_IMAGE"
+          docker image inspect "$MUSITU_TEMPORAL_CI_IMAGE" --format '{{json .RepoDigests}}' | tee /tmp/temporal-image-digests.txt
+          grep -F 'sha256:cea463d98a8d6def4420f903ea5c3fcd0d85c8d10fbcc2770a50c12fff2eb26d' /tmp/temporal-image-digests.txt
 
   spire:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - name: Acquire official SPIRE configuration
-        run: git clone --depth 1 --branch v1.15.3 https://github.com/spiffe/spire.git /tmp/spire
-      - name: Start SPIRE server
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Acquire exact official SPIRE configuration revision
+        run: |
+          git init /tmp/spire
+          git -C /tmp/spire remote add origin https://github.com/spiffe/spire.git
+          git -C /tmp/spire fetch --depth 1 origin "$SPIRE_UPSTREAM_SHA"
+          git -C /tmp/spire checkout --detach FETCH_HEAD
+          test "$(git -C /tmp/spire rev-parse HEAD)" = "$SPIRE_UPSTREAM_SHA"
+      - name: Start pinned SPIRE server
         run: |
           docker run -d --name musitu-spire-server --user 1000:1000 -p 8081:8081 \
             -v /tmp/spire/conf/server:/etc/spire/server:ro \
-            ghcr.io/spiffe/spire-server:1.15.3 \
+            "$MUSITU_SPIRE_CI_IMAGE" \
             -config /etc/spire/server/server_container.conf
-      - name: Verify SPIRE server health
+      - name: Verify SPIRE server health and provenance
         run: |
           for i in {1..60}; do
-            if docker exec musitu-spire-server /opt/spire/bin/spire-server healthcheck -socketPath /run/spire/server/private/api.sock; then exit 0; fi
+            if docker exec musitu-spire-server /opt/spire/bin/spire-server healthcheck -socketPath /run/spire/server/private/api.sock; then break; fi
             sleep 1
           done
-          docker logs musitu-spire-server
-          exit 1
+          docker exec musitu-spire-server /opt/spire/bin/spire-server healthcheck -socketPath /run/spire/server/private/api.sock
+          test "$(git -C /tmp/spire rev-parse HEAD)" = "$SPIRE_UPSTREAM_SHA"
+          test "$(docker inspect musitu-spire-server --format '{{.Config.Image}}')" = "$MUSITU_SPIRE_CI_IMAGE"
+          docker image inspect "$MUSITU_SPIRE_CI_IMAGE" --format '{{json .RepoDigests}}' | tee /tmp/spire-image-digests.txt
+          grep -F 'sha256:4082f30d3e0ddc4000a171392c4ea174345ee44d161ee917c70b97b2ecfba141' /tmp/spire-image-digests.txt
 
   envoy:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Create minimal MUSITU Envoy config
         run: |
           cat > "$RUNNER_TEMP/envoy.yaml" <<'EOF'
@@ -86,29 +109,71 @@ jobs:
       - name: Start pinned Envoy release
         run: |
           docker run -d --name musitu-envoy -p 10000:10000 -p 9901:9901 \
-            -v "$RUNNER_TEMP/envoy.yaml:/etc/envoy/envoy.yaml:ro" envoyproxy/envoy:v1.39.1
-      - name: Verify Envoy listener and admin readiness
+            -v "$RUNNER_TEMP/envoy.yaml:/etc/envoy/envoy.yaml:ro" "$MUSITU_ENVOY_CI_IMAGE"
+      - name: Verify Envoy listener, admin readiness, and image identity
         run: |
           for i in {1..60}; do curl -fsS http://127.0.0.1:10000/ | grep -q musitu-envoy-ok && break || sleep 1; done
           curl -fsS http://127.0.0.1:10000/ | grep -q musitu-envoy-ok
           curl -fsS http://127.0.0.1:9901/ready | grep -q LIVE
+          test "$(docker inspect musitu-envoy --format '{{.Config.Image}}')" = "$MUSITU_ENVOY_CI_IMAGE"
+          docker image inspect "$MUSITU_ENVOY_CI_IMAGE" --format '{{json .RepoDigests}}' | tee /tmp/envoy-image-digests.txt
+          grep -F 'sha256:57e14a549d7bd43c8d3f6d03e8cfa653e037d4b38e133acd9b54f38c524401b4' /tmp/envoy-image-digests.txt
 
   coraza:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
+    env:
+      CADDY_VERSION: v2.11.4
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: 'stable'
-      - name: Clone official Coraza Caddy integration
-        run: git clone --depth 1 https://github.com/corazawaf/coraza-caddy.git /tmp/coraza-caddy
-      - name: Install official Caddy builder dependency
-        run: go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
-      - name: Build and launch Coraza example
+          go-version: '1.27.1'
+          cache: false
+      - name: Acquire exact official Coraza Caddy revision
+        run: |
+          git init /tmp/coraza-caddy
+          git -C /tmp/coraza-caddy remote add origin https://github.com/corazawaf/coraza-caddy.git
+          git -C /tmp/coraza-caddy fetch --depth 1 origin "$CORAZA_UPSTREAM_SHA"
+          git -C /tmp/coraza-caddy checkout --detach FETCH_HEAD
+          test "$(git -C /tmp/coraza-caddy rev-parse HEAD)" = "$CORAZA_UPSTREAM_SHA"
+      - name: Pin Coraza example container inputs to successful-run identities
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          dockerfile = Path('/tmp/coraza-caddy/example/Dockerfile')
+          text = dockerfile.read_text()
+          old = 'FROM debian\n'
+          new = f"FROM {os.environ['CORAZA_DEBIAN_BASE']}\n"
+          if text.count(old) != 1:
+              raise SystemExit('Coraza example Dockerfile base signature changed; refusing unverified patch')
+          dockerfile.write_text(text.replace(old, new, 1))
+
+          compose = Path('/tmp/coraza-caddy/example/docker-compose.yml')
+          text = compose.read_text()
+          old = '    image: mccutchen/go-httpbin:2.25.0\n'
+          new = f"    image: {os.environ['CORAZA_HTTPBIN_IMAGE']}\n"
+          if text.count(old) != 1:
+              raise SystemExit('Coraza httpbin image signature changed; refusing unverified patch')
+          compose.write_text(text.replace(old, new, 1))
+          PY
+          grep -F "FROM $CORAZA_DEBIAN_BASE" /tmp/coraza-caddy/example/Dockerfile
+          grep -F "image: $CORAZA_HTTPBIN_IMAGE" /tmp/coraza-caddy/example/docker-compose.yml
+      - name: Install exact Caddy builder dependency
+        run: |
+          test "$(go version | awk '{print $3}')" = 'go1.27.1'
+          go install "github.com/caddyserver/xcaddy/cmd/xcaddy@$CORAZA_XCADDY_VERSION"
+          go version -m "$(command -v xcaddy)" | tee /tmp/xcaddy-buildinfo.txt
+          grep -F $'mod\tgithub.com/caddyserver/xcaddy\tv0.4.7' /tmp/xcaddy-buildinfo.txt
+      - name: Build and launch pinned Coraza example
         working-directory: /tmp/coraza-caddy
-        run: go run mage.go buildExample runExample
-      - name: Verify WAF passes benign request and blocks configured rule
+        run: |
+          go run mage.go buildExample runExample
+          ./build/caddy-linux version | tee /tmp/coraza-caddy-version.txt
+          grep -F 'v2.11.4 ' /tmp/coraza-caddy-version.txt
+      - name: Verify WAF, provenance, and pinned sidecar
         run: |
           ready=0
           for i in {1..120}; do
@@ -120,4 +185,8 @@ jobs:
           code=$(curl -sS -D /tmp/coraza-headers -o /tmp/coraza-blocked -w '%{http_code}' http://127.0.0.1:8080/admin || true)
           test "$code" = 403
           grep -Eqi '^X-Blocked:[[:space:]]*true' /tmp/coraza-headers
-          echo "Coraza benign=200 blocked=/admin:$code"
+          test "$(git -C /tmp/coraza-caddy rev-parse HEAD)" = "$CORAZA_UPSTREAM_SHA"
+          test "$(docker inspect example-httpbin-1 --format '{{.Config.Image}}')" = "$CORAZA_HTTPBIN_IMAGE"
+          docker image inspect "$CORAZA_HTTPBIN_IMAGE" --format '{{json .RepoDigests}}' | tee /tmp/coraza-httpbin-digests.txt
+          grep -F 'sha256:7aa3e3b544ca09a0c14328642fdc273e55744b7bf484baab2a03f27e325c07e3' /tmp/coraza-httpbin-digests.txt
+          echo "Coraza benign=200 blocked=/admin:$code provenance=verified"
