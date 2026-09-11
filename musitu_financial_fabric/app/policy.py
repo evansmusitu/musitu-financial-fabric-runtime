@@ -26,6 +26,9 @@ def evaluate_payment_policy(*, amount_minor: int, currency: str, rail: str, max_
 
     if settings.is_production:
         enabled = set(settings.production_enabled_rails)
+        enabled_currencies = set(settings.production_enabled_currencies)
+        if currency.upper() not in enabled_currencies:
+            return PolicyDecision(False, "currency_not_production_enabled")
         if rail not in enabled:
             return PolicyDecision(False, "rail_not_production_enabled")
         if rail not in _PRODUCTION_IMPLEMENTED_RAILS:

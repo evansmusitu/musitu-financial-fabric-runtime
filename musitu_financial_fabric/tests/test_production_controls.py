@@ -16,6 +16,7 @@ def _base_production(**overrides):
         live_funds_enabled=True,
         production_mode="pilot",
         production_enabled_rails=("ecocash",),
+        production_enabled_currencies=("USD",),
         metadata_db_url="postgresql://musitu:test@127.0.0.1/musitu",
         ledger_backend="tigerbeetle",
         tigerbeetle_addresses="127.0.0.1:3000",
@@ -32,12 +33,21 @@ def _base_production(**overrides):
         ecocash_payment_path="/payments",
         ecocash_client_id="test-client",
         ecocash_client_secret="test-secret",
+        max_single_payment_minor=1000,
     )
     values.update(overrides)
     return Settings(**values)
 
 
-def _approved_manifest(tmp_path, *, funds_scope: str = "pilot") -> tuple[str, str]:
+def _approved_manifest(
+    tmp_path,
+    *,
+    funds_scope: str = "pilot",
+    launch_rails: list[str] | None = None,
+    launch_currencies: list[str] | None = None,
+    launch_max: int = 1000,
+    include_launch_scope: bool = True,
+) -> tuple[str, str]:
     manifest = {
         "funds_scope": funds_scope,
         "evidence": {
@@ -48,6 +58,12 @@ def _approved_manifest(tmp_path, *, funds_scope: str = "pilot") -> tuple[str, st
             "rail_provider": {"status": "approved", "evidence_ref": "RAIL-CONTRACT-REF"},
         },
     }
+    if include_launch_scope:
+        manifest["launch_scope"] = {
+            "rails": ["ecocash"] if launch_rails is None else launch_rails,
+            "currencies": ["USD"] if launch_currencies is None else launch_currencies,
+            "max_single_payment_minor": launch_max,
+        }
     path = tmp_path / f"authorization-{funds_scope}.json"
     raw = json.dumps(manifest, sort_keys=True).encode()
     path.write_bytes(raw)
@@ -135,6 +151,47 @@ def test_live_funds_require_complete_ecocash_connector(tmp_path):
     result = production_readiness(cfg)
     assert result["ready_for_live_funds"] is False
     assert any(row["key"] == "ecocash_connector" and not row["ok"] for row in result["checks"])
+
+
+def test_authorization_manifest_must_pin_launch_scope(tmp_path):
+    path, digest = _approved_manifest(tmp_path, include_launch_scope=False)
+    cfg = _base_production(authorization_manifest_path=path, authorization_manifest_sha256=digest)
+    result = production_readiness(cfg)
+    assert result["ready_for_live_funds"] is False
+    failed = {row["key"] for row in result["checks"] if not row["ok"]}
+    assert {"authorized_rails", "authorized_currencies", "authorized_single_payment_limit"}.issubset(failed)
+
+
+def test_runtime_rail_cannot_exceed_pinned_launch_scope(tmp_path):
+    path, digest = _approved_manifest(tmp_path, launch_rails=[])
+    cfg = _base_production(authorization_manifest_path=path, authorization_manifest_sha256=digest)
+    result = production_readiness(cfg)
+    assert result["ready_for_live_funds"] is False
+    assert any(row["key"] == "authorized_rails" and not row["ok"] for row in result["checks"])
+
+
+def test_runtime_currency_cannot_exceed_pinned_launch_scope(tmp_path):
+    path, digest = _approved_manifest(tmp_path, launch_currencies=["USD"])
+    cfg = _base_production(
+        production_enabled_currencies=("USD", "EUR"),
+        authorization_manifest_path=path,
+        authorization_manifest_sha256=digest,
+    )
+    result = production_readiness(cfg)
+    assert result["ready_for_live_funds"] is False
+    assert any(row["key"] == "authorized_currencies" and not row["ok"] for row in result["checks"])
+
+
+def test_runtime_payment_ceiling_cannot_exceed_pinned_launch_scope(tmp_path):
+    path, digest = _approved_manifest(tmp_path, launch_max=1000)
+    cfg = _base_production(
+        max_single_payment_minor=1001,
+        authorization_manifest_path=path,
+        authorization_manifest_sha256=digest,
+    )
+    result = production_readiness(cfg)
+    assert result["ready_for_live_funds"] is False
+    assert any(row["key"] == "authorized_single_payment_limit" and not row["ok"] for row in result["checks"])
 
 
 def test_manifest_tampering_fails_closed(tmp_path):

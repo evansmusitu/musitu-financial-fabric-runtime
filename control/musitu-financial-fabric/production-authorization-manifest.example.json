@@ -1,30 +1,31 @@
 {
-  "schema_version": 1,
-  "system": "MUSITU Financial Fabric",
-  "purpose": "Template only. Never treat this repository copy as authorization evidence.",
-  "funds_scope": "none",
-  "expires_at": null,
+  "funds_scope": "pilot",
+  "launch_scope": {
+    "rails": ["ecocash"],
+    "currencies": ["USD"],
+    "max_single_payment_minor": 100000
+  },
   "evidence": {
     "regulator": {
-      "status": "missing",
+      "status": "pending",
       "evidence_ref": ""
     },
     "sponsor_bank": {
-      "status": "missing",
+      "status": "pending",
       "evidence_ref": ""
     },
     "data_protection": {
-      "status": "missing",
+      "status": "pending",
       "evidence_ref": ""
     },
     "independent_security": {
-      "status": "missing",
+      "status": "pending",
       "evidence_ref": ""
     },
     "rail_provider": {
-      "status": "missing",
+      "status": "pending",
       "evidence_ref": ""
     }
   },
-  "instructions": "The deployed authorization manifest must live outside the source repository. Pin its exact SHA-256 in MUSITU_AUTHORIZATION_MANIFEST_SHA256. Production code validates the digest, funds scope, and every required external approval before allowing live funds. Enabled production rails must also be explicitly configured and implemented."
+  "notes": "Example structure only. Replace every pending field with authentic externally retained evidence before pinning this manifest. Never commit credentials or confidential authorization material."
 }

@@ -92,6 +92,56 @@ def _evidence_checks(cfg: Settings) -> list[ProductionCheck]:
         scope_message if scope_ok else f"authorization scope {scope or 'none'} does not permit runtime mode {cfg.production_mode}",
     ))
 
+    launch_scope = manifest.get("launch_scope")
+    if not isinstance(launch_scope, dict):
+        checks.extend([
+            ProductionCheck("authorized_rails", False, "external", "authorization launch_scope.rails is missing"),
+            ProductionCheck("authorized_currencies", False, "external", "authorization launch_scope.currencies is missing"),
+            ProductionCheck("authorized_single_payment_limit", False, "external", "authorization launch_scope.max_single_payment_minor is missing"),
+        ])
+    else:
+        rails_raw = launch_scope.get("rails")
+        currencies_raw = launch_scope.get("currencies")
+        authorized_rails = {
+            value.strip().lower()
+            for value in rails_raw
+            if isinstance(value, str) and value.strip()
+        } if isinstance(rails_raw, list) else set()
+        authorized_currencies = {
+            value.strip().upper()
+            for value in currencies_raw
+            if isinstance(value, str) and value.strip()
+        } if isinstance(currencies_raw, list) else set()
+        runtime_rails = set(cfg.production_enabled_rails)
+        runtime_currencies = set(cfg.production_enabled_currencies)
+        rails_ok = bool(runtime_rails) and bool(authorized_rails) and runtime_rails.issubset(authorized_rails)
+        currencies_ok = bool(runtime_currencies) and bool(authorized_currencies) and runtime_currencies.issubset(authorized_currencies)
+        try:
+            authorized_max = int(launch_scope.get("max_single_payment_minor", 0))
+        except (TypeError, ValueError):
+            authorized_max = 0
+        max_ok = authorized_max > 0 and 0 < cfg.max_single_payment_minor <= authorized_max
+        checks.extend([
+            ProductionCheck(
+                "authorized_rails",
+                rails_ok,
+                "external",
+                "runtime production rails are within the pinned authorization perimeter" if rails_ok else "runtime production rails exceed or lack the pinned authorization perimeter",
+            ),
+            ProductionCheck(
+                "authorized_currencies",
+                currencies_ok,
+                "external",
+                "runtime production currencies are within the pinned authorization perimeter" if currencies_ok else "runtime production currencies exceed or lack the pinned authorization perimeter",
+            ),
+            ProductionCheck(
+                "authorized_single_payment_limit",
+                max_ok,
+                "external",
+                "runtime single-payment ceiling does not exceed the pinned authorization perimeter" if max_ok else "runtime single-payment ceiling exceeds or lacks the pinned authorization perimeter",
+            ),
+        ])
+
     expires_at = manifest.get("expires_at")
     if expires_at:
         try:
@@ -113,6 +163,8 @@ def _evidence_checks(cfg: Settings) -> list[ProductionCheck]:
 def production_checks(cfg: Settings = settings) -> list[ProductionCheck]:
     enabled_rails = set(cfg.production_enabled_rails)
     rails_ok = bool(enabled_rails) and enabled_rails.issubset(_PRODUCTION_IMPLEMENTED_RAILS)
+    enabled_currencies = set(cfg.production_enabled_currencies)
+    currencies_ok = bool(enabled_currencies) and all(len(code) == 3 and code.isalpha() and code == code.upper() for code in enabled_currencies)
     ecocash_enabled = "ecocash" in enabled_rails
     ecocash_configured = all([
         cfg.ecocash_api_base,
@@ -139,6 +191,18 @@ def production_checks(cfg: Settings = settings) -> list[ProductionCheck]:
             rails_ok,
             "software",
             "only explicitly enabled, implemented production rails may initiate funds movement",
+        ),
+        ProductionCheck(
+            "production_currencies",
+            currencies_ok,
+            "software",
+            "production currencies are explicitly configured as valid ISO-style three-letter codes",
+        ),
+        ProductionCheck(
+            "single_payment_limit",
+            cfg.max_single_payment_minor > 0,
+            "software",
+            "single-payment ceiling is explicitly positive",
         ),
         ProductionCheck(
             "ecocash_contract",
