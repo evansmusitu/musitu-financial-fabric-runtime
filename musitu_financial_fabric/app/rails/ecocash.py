@@ -1,12 +1,21 @@
 from __future__ import annotations
 
 import uuid
+from urllib.parse import urlparse
 
 import httpx
 
 from ..config import settings
 from ..production import assert_live_funds_allowed
 from .base import PaymentRail, RailRequest, RailResult
+
+
+def _relative_provider_path(value: str) -> bool:
+    value = str(value or "").strip()
+    if not value:
+        return False
+    parsed = urlparse(value)
+    return bool(not parsed.scheme and not parsed.netloc and parsed.path and not value.startswith("//"))
 
 
 class EcoCashRail(PaymentRail):
@@ -33,6 +42,10 @@ class EcoCashRail(PaymentRail):
         ]
         if not all(required):
             raise RuntimeError("EcoCash production configuration incomplete")
+        if not _relative_provider_path(settings.ecocash_oauth_path):
+            raise RuntimeError("EcoCash OAuth endpoint must be a relative path on the pinned provider host")
+        if not _relative_provider_path(settings.ecocash_payment_path):
+            raise RuntimeError("EcoCash payment endpoint must be a relative path on the pinned provider host")
 
         async with httpx.AsyncClient(base_url=settings.ecocash_api_base, timeout=20) as client:
             token_response = await client.post(
