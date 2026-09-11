@@ -91,6 +91,11 @@ locals {
     false
   )
 
+  authorization_not_expired = try(
+    timecmp(try(local.authorization_manifest.expires_at, ""), plantimestamp()) > 0,
+    false
+  )
+
   authorized_rails = toset([
     for rail in try(local.authorization_manifest.launch_scope.rails, []) : lower(rail)
   ])
@@ -120,11 +125,11 @@ locals {
 
 resource "terraform_data" "musitu_production_guard" {
   input = {
-    environment       = var.environment
-    production_mode   = var.production_mode
-    live_funds        = var.live_funds_enabled
-    enabled_rails     = sort(tolist(local.runtime_rails))
-    enabled_currencies = sort(tolist(local.runtime_currencies))
+    environment              = var.environment
+    production_mode          = var.production_mode
+    live_funds               = var.live_funds_enabled
+    enabled_rails            = sort(tolist(local.runtime_rails))
+    enabled_currencies       = sort(tolist(local.runtime_currencies))
     max_single_payment_minor = var.max_single_payment_minor
   }
 
@@ -136,11 +141,12 @@ resource "terraform_data" "musitu_production_guard" {
         local.authorization_hash_matches &&
         local.evidence_approved &&
         local.funds_scope_matches &&
+        local.authorization_not_expired &&
         local.rails_within_authorization &&
         local.currencies_within_authorization &&
         local.payment_limit_within_authorization
       )
-      error_message = "Live funds require a byte-pinned external authorization manifest whose approved evidence, funds scope, rails, currencies, and single-payment ceiling contain the exact deployment perimeter."
+      error_message = "Live funds require a byte-pinned, unexpired external authorization manifest whose approved evidence, funds scope, rails, currencies, and single-payment ceiling contain the exact deployment perimeter."
     }
   }
 }

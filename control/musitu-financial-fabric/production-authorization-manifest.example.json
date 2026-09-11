@@ -1,31 +1,17 @@
 {
   "funds_scope": "pilot",
+  "expires_at": "REPLACE-WITH-RFC3339-UTC-EXPIRY",
   "launch_scope": {
     "rails": ["ecocash"],
     "currencies": ["USD"],
     "max_single_payment_minor": 100000
   },
   "evidence": {
-    "regulator": {
-      "status": "pending",
-      "evidence_ref": ""
-    },
-    "sponsor_bank": {
-      "status": "pending",
-      "evidence_ref": ""
-    },
-    "data_protection": {
-      "status": "pending",
-      "evidence_ref": ""
-    },
-    "independent_security": {
-      "status": "pending",
-      "evidence_ref": ""
-    },
-    "rail_provider": {
-      "status": "pending",
-      "evidence_ref": ""
-    }
+    "regulator": {"status": "pending", "evidence_ref": ""},
+    "sponsor_bank": {"status": "pending", "evidence_ref": ""},
+    "data_protection": {"status": "pending", "evidence_ref": ""},
+    "independent_security": {"status": "pending", "evidence_ref": ""},
+    "rail_provider": {"status": "pending", "evidence_ref": ""}
   },
-  "notes": "Example structure only. Replace every pending field with authentic externally retained evidence before pinning this manifest. Never commit credentials or confidential authorization material."
+  "notes": "Example structure only. Replace every pending field and the expiry with authentic externally retained evidence before pinning this manifest. Never commit credentials or confidential authorization material."
 }

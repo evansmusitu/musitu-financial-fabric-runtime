@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -47,6 +48,8 @@ def _approved_manifest(
     launch_currencies: list[str] | None = None,
     launch_max: int = 1000,
     include_launch_scope: bool = True,
+    include_expiry: bool = True,
+    expires_at: str | None = None,
 ) -> tuple[str, str]:
     manifest = {
         "funds_scope": funds_scope,
@@ -64,6 +67,8 @@ def _approved_manifest(
             "currencies": ["USD"] if launch_currencies is None else launch_currencies,
             "max_single_payment_minor": launch_max,
         }
+    if include_expiry:
+        manifest["expires_at"] = expires_at or (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
     path = tmp_path / f"authorization-{funds_scope}.json"
     raw = json.dumps(manifest, sort_keys=True).encode()
     path.write_bytes(raw)
@@ -160,6 +165,23 @@ def test_authorization_manifest_must_pin_launch_scope(tmp_path):
     assert result["ready_for_live_funds"] is False
     failed = {row["key"] for row in result["checks"] if not row["ok"]}
     assert {"authorized_rails", "authorized_currencies", "authorized_single_payment_limit"}.issubset(failed)
+
+
+def test_authorization_manifest_requires_explicit_expiry(tmp_path):
+    path, digest = _approved_manifest(tmp_path, include_expiry=False)
+    cfg = _base_production(authorization_manifest_path=path, authorization_manifest_sha256=digest)
+    result = production_readiness(cfg)
+    assert result["ready_for_live_funds"] is False
+    assert any(row["key"] == "authorization_not_expired" and not row["ok"] for row in result["checks"])
+
+
+def test_expired_authorization_manifest_fails_closed(tmp_path):
+    expired = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+    path, digest = _approved_manifest(tmp_path, expires_at=expired)
+    cfg = _base_production(authorization_manifest_path=path, authorization_manifest_sha256=digest)
+    result = production_readiness(cfg)
+    assert result["ready_for_live_funds"] is False
+    assert any(row["key"] == "authorization_not_expired" and not row["ok"] for row in result["checks"])
 
 
 def test_runtime_rail_cannot_exceed_pinned_launch_scope(tmp_path):

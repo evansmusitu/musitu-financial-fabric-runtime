@@ -143,20 +143,21 @@ def _evidence_checks(cfg: Settings) -> list[ProductionCheck]:
         ])
 
     expires_at = manifest.get("expires_at")
-    if expires_at:
-        try:
-            expiry = datetime.fromisoformat(str(expires_at).replace("Z", "+00:00"))
-            if expiry.tzinfo is None:
-                expiry = expiry.replace(tzinfo=timezone.utc)
-            ok = expiry > datetime.now(timezone.utc)
-        except Exception:
-            ok = False
-        checks.append(ProductionCheck(
-            "authorization_not_expired",
-            ok,
-            "external",
-            "authorization evidence is within validity period" if ok else "authorization evidence is expired or invalid",
-        ))
+    try:
+        if not expires_at:
+            raise ValueError("missing expiry")
+        expiry = datetime.fromisoformat(str(expires_at).replace("Z", "+00:00"))
+        if expiry.tzinfo is None:
+            raise ValueError("expiry must include timezone")
+        expiry_ok = expiry > datetime.now(timezone.utc)
+    except Exception:
+        expiry_ok = False
+    checks.append(ProductionCheck(
+        "authorization_not_expired",
+        expiry_ok,
+        "external",
+        "authorization evidence is within its explicit validity period" if expiry_ok else "authorization expiry is missing, invalid, or expired",
+    ))
     return checks
 
 
