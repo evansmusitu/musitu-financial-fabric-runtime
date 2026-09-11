@@ -90,7 +90,23 @@ jobs:
           pnpm install --frozen-lockfile
       - name: Launch official two-ASE Open Payments playground
         working-directory: /tmp/rafiki
-        run: pnpm localenv:compose up -d
+        run: |
+          set +e
+          pnpm localenv:compose up -d
+          rc=$?
+          set -e
+          pnpm localenv:compose ps -a | tee /tmp/rafiki-compose-ps.txt || true
+          docker inspect rafiki-cloud-nine-backend-1 > /tmp/rafiki-cloud-nine-backend-inspect.json 2>/dev/null || true
+          docker logs rafiki-cloud-nine-backend-1 > /tmp/rafiki-cloud-nine-backend.log 2>&1 || true
+          if [ "$rc" -ne 0 ]; then
+            echo '=== Rafiki compose state ==='
+            cat /tmp/rafiki-compose-ps.txt || true
+            echo '=== Cloud Nine backend health ==='
+            docker inspect -f '{{json .State.Health}}' rafiki-cloud-nine-backend-1 || true
+            echo '=== Cloud Nine backend logs ==='
+            cat /tmp/rafiki-cloud-nine-backend.log || true
+            exit "$rc"
+          fi
       - name: Verify both Open Payments instances and auth endpoints
         run: |
           for port in 3000 3006 4000 4006; do
@@ -113,6 +129,9 @@ jobs:
           path: |
             /tmp/rafiki.sha
             /tmp/rafiki-containers.txt
+            /tmp/rafiki-compose-ps.txt
+            /tmp/rafiki-cloud-nine-backend-inspect.json
+            /tmp/rafiki-cloud-nine-backend.log
 
   stellar-anchor:
     runs-on: ubuntu-24.04
