@@ -1,0 +1,121 @@
+name: MUSITU Financial Fabric — Mandate Concurrency Guard
+
+on:
+  push:
+    branches: [musitu-financial-fabric-production-readiness]
+    paths:
+      - 'musitu_financial_fabric/app/db.py'
+      - 'musitu_financial_fabric/app/service.py'
+      - 'musitu_financial_fabric/tests/test_postgres_mandate_serialization.py'
+      - '.github/workflows/musitu-financial-fabric-mandate-concurrency.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  postgres-mandate-serialization:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: musitu_financial_fabric
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install application
+        run: python -m pip install -e .
+      - name: Start PostgreSQL
+        run: docker run -d --name musitu-mandate-postgres -e POSTGRES_PASSWORD=musitu-ci -p 5432:5432 postgres:16-alpine
+      - name: Verify PostgreSQL
+        run: |
+          for i in {1..60}; do docker exec musitu-mandate-postgres pg_isready -U postgres && exit 0 || sleep 1; done
+          docker logs musitu-mandate-postgres
+          exit 1
+      - name: Prove same-mandate aggregate reads serialize while different mandates remain independent
+        env:
+          MUSITU_METADATA_DB_URL: postgresql://postgres:musitu-ci@127.0.0.1:5432/postgres
+        run: |
+          python - <<'PY'
+          import threading
+          import time
+
+          from app.db import connect, init_db
+
+          QUERY = """SELECT COALESCE(SUM(amount_minor),0) AS total
+                     FROM agent_mandate_reservations
+                     WHERE mandate_id=? AND day_utc=? AND status IN ('reserved','committed')"""
+
+          init_db()
+          first_locked = threading.Event()
+          release_first = threading.Event()
+          same_done = threading.Event()
+          other_done = threading.Event()
+          failures = []
+
+          def holder():
+              try:
+                  with connect() as conn:
+                      conn.execute("BEGIN IMMEDIATE")
+                      conn.execute(QUERY, ("mnd_shared", "2026-09-11"))
+                      first_locked.set()
+                      if not release_first.wait(5):
+                          raise RuntimeError("timed out waiting to release first mandate lock")
+                      conn.execute("COMMIT")
+              except Exception as exc:
+                  failures.append(("holder", repr(exc)))
+                  first_locked.set()
+                  release_first.set()
+
+          def same_mandate():
+              try:
+                  if not first_locked.wait(5):
+                      raise RuntimeError("first mandate lock was never acquired")
+                  with connect() as conn:
+                      conn.execute("BEGIN IMMEDIATE")
+                      conn.execute(QUERY, ("mnd_shared", "2026-09-11"))
+                      same_done.set()
+                      conn.execute("COMMIT")
+              except Exception as exc:
+                  failures.append(("same", repr(exc)))
+                  same_done.set()
+
+          def other_mandate():
+              try:
+                  if not first_locked.wait(5):
+                      raise RuntimeError("first mandate lock was never acquired")
+                  with connect() as conn:
+                      conn.execute("BEGIN IMMEDIATE")
+                      conn.execute(QUERY, ("mnd_independent", "2026-09-11"))
+                      other_done.set()
+                      conn.execute("COMMIT")
+              except Exception as exc:
+                  failures.append(("other", repr(exc)))
+                  other_done.set()
+
+          t1 = threading.Thread(target=holder)
+          t2 = threading.Thread(target=same_mandate)
+          t3 = threading.Thread(target=other_mandate)
+          t1.start()
+          assert first_locked.wait(5), failures
+          t2.start()
+          t3.start()
+
+          assert other_done.wait(3), ("different mandate was unnecessarily blocked", failures)
+          time.sleep(0.5)
+          assert not same_done.is_set(), ("same mandate was not serialized", failures)
+
+          release_first.set()
+          t1.join(5)
+          t2.join(5)
+          t3.join(5)
+          assert not t1.is_alive() and not t2.is_alive() and not t3.is_alive(), failures
+          assert same_done.is_set(), failures
+          assert not failures, failures
+          print("PASS: PostgreSQL serializes daily-spend aggregate checks per mandate without a global lock")
+          PY
+      - name: Capture failure diagnostics
+        if: failure()
+        run: docker logs musitu-mandate-postgres || true
