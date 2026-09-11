@@ -15,6 +15,7 @@ def _cfg(**overrides):
         production_enabled_currencies=("USD",),
         metadata_db_url="postgresql://musitu:test@127.0.0.1/musitu",
         ledger_backend="tigerbeetle",
+        tigerbeetle_cluster_id=1,
         tigerbeetle_addresses="127.0.0.1:3000",
         auth_introspection_url="https://identity.invalid/introspect",
         auth_client_id="musitu",
