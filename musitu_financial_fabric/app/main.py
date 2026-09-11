@@ -15,28 +15,9 @@ from .config import settings
 from .db import init_db
 from .ledger import balance, get_account
 from .production import ProductionGateError, enforce_safe_startup, production_readiness
-from .protocols.adapters import (
-    gsma_transaction,
-    iso20022_pacs008,
-    mpp_challenge,
-    open_payments_incoming,
-    stripe_payment_intent,
-    x402_challenge,
-)
+from .protocols.adapters import gsma_transaction, iso20022_pacs008, mpp_challenge, open_payments_incoming, stripe_payment_intent, x402_challenge
 from .security import verify_hmac
-from .service import (
-    PaymentError,
-    create_agent_mandate,
-    create_agent_payment,
-    create_identity,
-    create_merchant,
-    create_payment_intent,
-    get_agent_mandate,
-    get_payment,
-    reconcile,
-    register_webhook_event,
-    settle_payment,
-)
+from .service import PaymentError, create_agent_mandate, create_agent_payment, create_identity, create_merchant, create_payment_intent, get_agent_mandate, get_payment, reconcile, register_webhook_event, settle_payment
 from .settlement import ProviderSettlementError, provider_fail, provider_succeed
 
 
@@ -107,13 +88,9 @@ class ProtocolPaymentEnvelope(BaseModel):
 def health():
     gate = production_readiness() if settings.is_production else {"ready_for_live_funds": False, "checks": []}
     return {
-        "status": "ok",
-        "environment": settings.environment,
-        "production_mode": settings.production_mode,
-        "live_funds_enabled": settings.live_funds_enabled,
-        "ready_for_live_funds": gate["ready_for_live_funds"],
-        "custody_mode": "disabled" if not gate["ready_for_live_funds"] else "externally-authorized",
-        "fabric_version": "0.3.0",
+        "status": "ok", "environment": settings.environment, "production_mode": settings.production_mode,
+        "live_funds_enabled": settings.live_funds_enabled, "ready_for_live_funds": gate["ready_for_live_funds"],
+        "custody_mode": "disabled" if not gate["ready_for_live_funds"] else "externally-authorized", "fabric_version": "0.3.0",
     }
 
 
@@ -125,11 +102,10 @@ def fabric_components():
 @app.get("/v1/fabric/readiness")
 async def fabric_readiness():
     result = await probe_components()
+    production = production_readiness() if settings.is_production else {"ready_for_live_funds": False, "checks": []}
     result["sandbox_api_operational"] = not settings.is_production
-    result["production"] = production_readiness() if settings.is_production else {
-        "ready_for_live_funds": False,
-        "checks": [],
-    }
+    result["production"] = production
+    result["production_funds_gate"] = bool(production["ready_for_live_funds"])
     return result
 
 
@@ -174,17 +150,7 @@ def account_get(account_id: str):
 @app.post("/v1/payments/intents")
 async def payment_create(payload: PaymentCreate, idempotency_key: str = Header(alias="Idempotency-Key")):
     try:
-        payment = await create_payment_intent(
-            merchant_id=payload.merchant_id,
-            destination_account_id=payload.destination_account_id,
-            amount_minor=payload.amount_minor,
-            currency=payload.currency,
-            rail=payload.rail,
-            payer_ref=payload.payer_ref,
-            description=payload.description,
-            idempotency_key=idempotency_key,
-            callback_url=payload.callback_url,
-        )
+        payment = await create_payment_intent(merchant_id=payload.merchant_id, destination_account_id=payload.destination_account_id, amount_minor=payload.amount_minor, currency=payload.currency, rail=payload.rail, payer_ref=payload.payer_ref, description=payload.description, idempotency_key=idempotency_key, callback_url=payload.callback_url)
     except PaymentError as exc:
         raise HTTPException(400, str(exc)) from exc
     payment["musitu_payment_uri"] = "musitu://pay?" + urlencode({"payment_id": payment["id"]})
@@ -209,16 +175,7 @@ def payment_get(payment_id: str):
 
 async def _normalized_payment(envelope: ProtocolPaymentEnvelope, intent, idempotency_key: str):
     try:
-        return await create_payment_intent(
-            merchant_id=envelope.merchant_id,
-            destination_account_id=envelope.destination_account_id,
-            amount_minor=intent.amount_minor,
-            currency=intent.currency,
-            rail=envelope.rail,
-            payer_ref=intent.payer_ref,
-            description=intent.description,
-            idempotency_key=idempotency_key,
-        )
+        return await create_payment_intent(merchant_id=envelope.merchant_id, destination_account_id=envelope.destination_account_id, amount_minor=intent.amount_minor, currency=intent.currency, rail=envelope.rail, payer_ref=intent.payer_ref, description=intent.description, idempotency_key=idempotency_key)
     except (PaymentError, ValueError, KeyError) as exc:
         raise HTTPException(400, str(exc)) from exc
 
@@ -230,11 +187,7 @@ async def stripe_compat_payment(envelope: ProtocolPaymentEnvelope, idempotency_k
     except Exception as exc:
         raise HTTPException(400, f"invalid Stripe-compatible payload: {exc}") from exc
     payment = await _normalized_payment(envelope, intent, idempotency_key)
-    return {
-        "id": payment["id"], "object": "payment_intent", "amount": payment["amount_minor"],
-        "currency": payment["currency"].lower(), "status": "processing" if payment["status"] == "pending" else payment["status"],
-        "musitu_rail": payment["rail"],
-    }
+    return {"id": payment["id"], "object": "payment_intent", "amount": payment["amount_minor"], "currency": payment["currency"].lower(), "status": "processing" if payment["status"] == "pending" else payment["status"], "musitu_rail": payment["rail"]}
 
 
 @app.post("/open-payments/incoming-payments")

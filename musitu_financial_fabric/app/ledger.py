@@ -33,7 +33,7 @@ def _tb_client():
         import tigerbeetle as tb
     except ImportError as exc:
         raise LedgerError("TigerBeetle Python client is required in production") from exc
-    addresses = [value.strip() for value in settings.tigerbeetle_addresses.split(",") if value.strip()]
+    addresses = settings.tigerbeetle_addresses.strip()
     if not addresses:
         raise LedgerError("TigerBeetle replica addresses are not configured")
     return tb, tb.ClientSync(cluster_id=settings.tigerbeetle_cluster_id, replica_addresses=addresses)
@@ -53,32 +53,21 @@ def create_account(owner_type: str, owner_id: str, currency: str, kind: str) -> 
             if existing:
                 conn.execute("COMMIT")
                 return dict(existing)
-
             if settings.is_production:
                 if settings.ledger_backend != "tigerbeetle":
                     raise LedgerError("production monetary truth must use TigerBeetle")
                 tb, client = _tb_client()
                 try:
                     event = tb.Account(
-                        id=_u128(account_id),
-                        debits_pending=0,
-                        debits_posted=0,
-                        credits_pending=0,
-                        credits_posted=0,
-                        user_data_128=0,
-                        user_data_64=0,
-                        user_data_32=0,
-                        ledger=_ledger_id(currency),
-                        code=settings.tigerbeetle_account_code,
-                        flags=0,
-                        timestamp=0,
+                        id=_u128(account_id), debits_pending=0, debits_posted=0, credits_pending=0, credits_posted=0,
+                        user_data_128=0, user_data_64=0, user_data_32=0,
+                        ledger=_ledger_id(currency), code=settings.tigerbeetle_account_code, flags=0, timestamp=0,
                     )
                     result = client.create_accounts([event])[0]
                     if result.status not in {tb.CreateAccountStatus.CREATED, tb.CreateAccountStatus.EXISTS}:
                         raise LedgerError(f"TigerBeetle account creation failed: {result.status}")
                 finally:
                     client.close()
-
             conn.execute(
                 "INSERT INTO accounts(id,owner_type,owner_id,currency,kind,status,created_at) VALUES (?,?,?,?,?,'active',?)",
                 (account_id, owner_type, owner_id, currency, kind, created_at),
@@ -107,7 +96,7 @@ def balance(account_id: str) -> int:
         account = get_account(account_id)
         if not account:
             raise LedgerError(f"Invalid account: {account_id}")
-        tb, client = _tb_client()
+        _, client = _tb_client()
         try:
             rows = client.lookup_accounts([_u128(account_id)])
         finally:
@@ -116,7 +105,6 @@ def balance(account_id: str) -> int:
             raise LedgerError("TigerBeetle account missing")
         row = rows[0]
         return int(row.credits_posted) - int(row.debits_posted)
-
     with connect() as conn:
         row = conn.execute("SELECT COALESCE(SUM(delta_minor),0) AS b FROM ledger_postings WHERE account_id=?", (account_id,)).fetchone()
     return int(row["b"])
@@ -151,7 +139,6 @@ def post(reference: str, memo: str, postings: Iterable[tuple[str, int]]) -> str:
         raise LedgerError("Unbalanced journal entry")
     if any(delta == 0 for _, delta in postings):
         raise LedgerError("Zero-value postings are not allowed")
-
     journal_id = f"jrnl_{hashlib.sha256(reference.encode()).hexdigest()[:32]}" if settings.is_production else f"jrnl_{uuid.uuid4().hex}"
     with connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
@@ -160,7 +147,6 @@ def post(reference: str, memo: str, postings: Iterable[tuple[str, int]]) -> str:
             if existing:
                 conn.execute("COMMIT")
                 return existing["id"]
-
             currencies: set[str] = set()
             for account_id, _ in postings:
                 row = conn.execute("SELECT currency,status FROM accounts WHERE id=?", (account_id,)).fetchone()
@@ -170,7 +156,6 @@ def post(reference: str, memo: str, postings: Iterable[tuple[str, int]]) -> str:
             if len(currencies) != 1:
                 raise LedgerError("Cross-currency journal entries are not allowed; use explicit FX legs")
             currency = next(iter(currencies))
-
             if settings.is_production:
                 if settings.ledger_backend != "tigerbeetle":
                     raise LedgerError("reference ledger is forbidden in production")
@@ -181,19 +166,9 @@ def post(reference: str, memo: str, postings: Iterable[tuple[str, int]]) -> str:
                     for index, (debit_id, credit_id, amount) in enumerate(legs):
                         flags = tb.TransferFlags.LINKED if index < len(legs) - 1 else 0
                         events.append(tb.Transfer(
-                            id=_u128(f"{reference}|{index}"),
-                            debit_account_id=_u128(debit_id),
-                            credit_account_id=_u128(credit_id),
-                            amount=amount,
-                            pending_id=0,
-                            user_data_128=_u128(journal_id),
-                            user_data_64=0,
-                            user_data_32=0,
-                            timeout=0,
-                            ledger=_ledger_id(currency),
-                            code=settings.tigerbeetle_transfer_code,
-                            flags=flags,
-                            timestamp=0,
+                            id=_u128(f"{reference}|{index}"), debit_account_id=_u128(debit_id), credit_account_id=_u128(credit_id),
+                            amount=amount, pending_id=0, user_data_128=_u128(journal_id), user_data_64=0, user_data_32=0,
+                            timeout=0, ledger=_ledger_id(currency), code=settings.tigerbeetle_transfer_code, flags=flags, timestamp=0,
                         ))
                     results = client.create_transfers(events)
                     allowed = {tb.CreateTransferStatus.CREATED, tb.CreateTransferStatus.EXISTS}
@@ -202,19 +177,11 @@ def post(reference: str, memo: str, postings: Iterable[tuple[str, int]]) -> str:
                         raise LedgerError("TigerBeetle transfer rejected: " + ",".join(failures))
                 finally:
                     client.close()
-
-            conn.execute(
-                "INSERT INTO journal_entries(id,reference,memo,created_at) VALUES (?,?,?,?)",
-                (journal_id, reference, memo, now_iso()),
-            )
+            conn.execute("INSERT INTO journal_entries(id,reference,memo,created_at) VALUES (?,?,?,?)", (journal_id, reference, memo, now_iso()))
             for account_id, delta in postings:
-                conn.execute(
-                    "INSERT INTO ledger_postings(journal_id,account_id,delta_minor) VALUES (?,?,?)",
-                    (journal_id, account_id, delta),
-                )
+                conn.execute("INSERT INTO ledger_postings(journal_id,account_id,delta_minor) VALUES (?,?,?)", (journal_id, account_id, delta))
             append_audit("ledger.posted", journal_id, {
-                "reference": reference,
-                "memo": memo,
+                "reference": reference, "memo": memo,
                 "postings": [{"account_id": a, "delta_minor": d} for a, d in postings],
                 "monetary_backend": "tigerbeetle" if settings.is_production else "reference",
             }, conn=conn)
