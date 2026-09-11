@@ -19,7 +19,7 @@ jobs:
   watchman:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Start deterministic Watchman static dataset
         run: docker run -d --name musitu-watchman -p 8084:8084 moov/watchman:v2-static
       - name: Verify Watchman search API
@@ -45,7 +45,7 @@ jobs:
       - name: Upload Watchman evidence
         if: always()
         continue-on-error: true
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: musitu-watchman-evidence
           path: |
@@ -56,7 +56,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Acquire exact official Tazama stack revision
         run: |
           git init /tmp/tazama-stack
@@ -104,7 +104,7 @@ jobs:
       - name: Upload evidence (non-gating when GitHub artifact quota is exhausted)
         if: always()
         continue-on-error: true
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: musitu-tazama-evidence
           path: |
@@ -117,7 +117,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Acquire exact official Kill Bill cloud deployment revision
         run: |
           git init /tmp/killbill-cloud
@@ -163,7 +163,7 @@ jobs:
       - name: Upload Kill Bill evidence
         if: always()
         continue-on-error: true
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: musitu-killbill-evidence
           path: |
