@@ -104,16 +104,23 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
+        with:
+          cosign-release: v2.5.2
       - uses: opentofu/setup-opentofu@9d84900f3238fab8cd84ce47d658d25dd008be2f # v1
+        with:
+          tofu_version: 1.12.6
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: '22'
+          node-version: '24.18.0'
       - name: Install API tooling at exact versions
         run: npm install -g @openapitools/openapi-generator-cli@2.41.0 @stoplight/prism-cli@5.16.0
+      - name: Select exact OpenAPI Generator runtime
+        run: openapi-generator-cli version-manager set "$OPENAPI_GENERATOR_VERSION"
       - name: Verify tooling identities
         run: |
-          cosign version
-          tofu version
+          test "$(node --version)" = 'v24.18.0'
+          cosign version | grep -F 'GitVersion:    v2.5.2'
+          tofu version | grep -F 'OpenTofu v1.12.6'
           npm list -g --depth=0 | tee /tmp/musitu-foundation-global-npm.txt
           grep -F '@openapitools/openapi-generator-cli@2.41.0' /tmp/musitu-foundation-global-npm.txt
           grep -F '@stoplight/prism-cli@5.16.0' /tmp/musitu-foundation-global-npm.txt
