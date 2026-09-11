@@ -110,6 +110,8 @@ jobs:
           docker compose logs --no-color migration_runner > /tmp/hyperswitch-migration-runner.log 2>&1 || true
           docker compose logs --no-color superposition-init > /tmp/hyperswitch-superposition-init.log 2>&1 || true
           docker compose logs --no-color hyperswitch-server > /tmp/hyperswitch-server.log 2>&1 || true
+          cp crates/diesel_models/src/schema.rs /tmp/hyperswitch-generated-schema.rs || true
+          cp crates/diesel_models/drop_id.patch /tmp/hyperswitch-drop-id.patch || true
       - name: Upload evidence
         if: always()
         continue-on-error: true
@@ -125,3 +127,5 @@ jobs:
             /tmp/hyperswitch-migration-runner.log
             /tmp/hyperswitch-superposition-init.log
             /tmp/hyperswitch-server.log
+            /tmp/hyperswitch-generated-schema.rs
+            /tmp/hyperswitch-drop-id.patch
