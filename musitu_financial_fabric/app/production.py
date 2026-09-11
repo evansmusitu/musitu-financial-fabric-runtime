@@ -29,6 +29,7 @@ _PRODUCTION_IMPLEMENTED_RAILS = {"ecocash"}
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
 _SECURE_POSTGRES_SSLMODES = {"require", "verify-ca", "verify-full"}
+_PG_BIGINT_MAX = (1 << 63) - 1
 
 
 def _parsed_service_url(value: str):
@@ -290,9 +291,9 @@ def production_checks(cfg: Settings = settings) -> list[ProductionCheck]:
         ),
         ProductionCheck(
             "single_payment_limit",
-            cfg.max_single_payment_minor > 0,
+            0 < cfg.max_single_payment_minor <= _PG_BIGINT_MAX,
             "software",
-            "single-payment ceiling is explicitly positive",
+            "single-payment ceiling is positive and representable in PostgreSQL BIGINT",
         ),
         ProductionCheck(
             "ecocash_contract",
@@ -366,6 +367,8 @@ def enforce_safe_startup(cfg: Settings = settings) -> None:
             raise ProductionGateError("production startup requires MUSITU_PRODUCTION_MODE=shadow, pilot, or live")
         if cfg.max_request_body_bytes <= 0:
             raise ProductionGateError("production startup requires a positive request body limit")
+        if not (0 < cfg.max_single_payment_minor <= _PG_BIGINT_MAX):
+            raise ProductionGateError("production startup requires a positive single-payment limit representable in PostgreSQL BIGINT")
         if not cfg.uses_postgres:
             raise ProductionGateError("production startup requires MUSITU_METADATA_DB_URL pointing to PostgreSQL")
         if not _postgres_transport_secure(cfg.metadata_db_url):
