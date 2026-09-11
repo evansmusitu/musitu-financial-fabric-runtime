@@ -4,6 +4,7 @@ import httpx
 from fastapi import Request
 from starlette.responses import JSONResponse
 
+from .audit import append_audit
 from .config import settings
 from .security import verify_hmac
 from .webhook import WebhookReplayConflict, begin_webhook_delivery, finish_webhook_delivery
@@ -105,13 +106,46 @@ async def _authorize(principal: dict, request: Request, *, resource: dict | None
     return decision
 
 
+def _resource_audit_target(request: Request, resource: dict) -> str:
+    for key in ("id", "payment_id", "mandate_id"):
+        value = str(resource.get(key) or "").strip()
+        if value:
+            return value
+    idempotency_key = str(request.headers.get("Idempotency-Key") or "").strip()
+    if idempotency_key:
+        return f"idempotency:{idempotency_key}"
+    for key in ("merchant_id", "destination_account_id", "principal_id", "agent_id"):
+        value = str(resource.get(key) or "").strip()
+        if value:
+            return value
+    return str(resource.get("type") or "resource")
+
+
 async def authorize_resource(request: Request, resource: dict) -> dict:
     if not settings.is_production:
         return {"allow": True, "decision_id": "sandbox", "engines": ["sandbox"]}
     principal = getattr(request.state, "principal", None)
     if not isinstance(principal, dict) or not str(principal.get("sub") or principal.get("client_id") or "").strip():
         raise PermissionError("authenticated principal unavailable")
-    return await _authorize(principal, request, resource=resource)
+    decision = await _authorize(principal, request, resource=resource)
+    actor = str(principal.get("sub") or principal.get("client_id")).strip()
+    decision_id = str(decision.get("decision_id") or "").strip()
+    audit_data = {
+        "actor": actor,
+        "authorization_decision_id": decision_id,
+        "method": request.method.upper(),
+        "path": request.url.path,
+        "resource": resource,
+    }
+    idempotency_key = str(request.headers.get("Idempotency-Key") or "").strip()
+    if idempotency_key:
+        audit_data["idempotency_key"] = idempotency_key
+    append_audit(
+        "authorization.resource_granted",
+        _resource_audit_target(request, resource),
+        audit_data,
+    )
+    return decision
 
 
 async def _production_ecocash_webhook(request: Request, call_next):
