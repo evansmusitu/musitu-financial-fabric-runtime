@@ -15,6 +15,7 @@ def _production_cfg(tmp_path) -> Settings:
         live_funds_enabled=False,
         production_mode="shadow",
         production_enabled_rails=("ecocash",),
+        production_enabled_currencies=("USD",),
         ecocash_contract_confirmed=True,
         ecocash_contract_version="test-contract-v1",
         ecocash_api_base="https://ecocash.invalid",
