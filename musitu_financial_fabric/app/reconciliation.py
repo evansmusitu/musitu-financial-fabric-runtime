@@ -4,7 +4,7 @@ from typing import Any
 
 from .config import settings
 from .db import connect
-from .ledger import _tb_client, _u128
+from .ledger import _tb_client, _tb_worker_request, _u128, _uses_bounded_production_tigerbeetle
 
 
 _LOOKUP_BATCH_SIZE = 4096
@@ -65,17 +65,34 @@ def reconcile_monetary_truth() -> dict[str, Any]:
             "error": f"metadata_read:{type(exc).__name__}",
         }
 
-    client = None
     try:
-        _, client = _tb_client()
         actual_by_id: dict[int, Any] = {}
-        if not accounts:
-            client.lookup_accounts([1])
+        if _uses_bounded_production_tigerbeetle():
+            if not accounts:
+                _tb_worker_request({"operation": "lookup_accounts", "ids": [1]})
+            else:
+                for start in range(0, len(accounts), _LOOKUP_BATCH_SIZE):
+                    ids = [row["tigerbeetle_id"] for row in accounts[start : start + _LOOKUP_BATCH_SIZE]]
+                    response = _tb_worker_request({"operation": "lookup_accounts", "ids": ids})
+                    for account in response.get("accounts") or []:
+                        actual_by_id[int(account["id"])] = account
         else:
-            for start in range(0, len(accounts), _LOOKUP_BATCH_SIZE):
-                ids = [row["tigerbeetle_id"] for row in accounts[start : start + _LOOKUP_BATCH_SIZE]]
-                for account in client.lookup_accounts(ids):
-                    actual_by_id[int(account.id)] = account
+            client = None
+            try:
+                _, client = _tb_client()
+                if not accounts:
+                    client.lookup_accounts([1])
+                else:
+                    for start in range(0, len(accounts), _LOOKUP_BATCH_SIZE):
+                        ids = [row["tigerbeetle_id"] for row in accounts[start : start + _LOOKUP_BATCH_SIZE]]
+                        for account in client.lookup_accounts(ids):
+                            actual_by_id[int(account.id)] = account
+            finally:
+                if client is not None:
+                    try:
+                        client.close()
+                    except Exception:
+                        pass
     except Exception as exc:
         return {
             "applicable": True,
@@ -86,12 +103,6 @@ def reconcile_monetary_truth() -> dict[str, Any]:
             "mismatches": [],
             "error": f"tigerbeetle_lookup:{type(exc).__name__}",
         }
-    finally:
-        if client is not None:
-            try:
-                client.close()
-            except Exception:
-                pass
 
     if not accounts:
         return {
@@ -110,7 +121,10 @@ def reconcile_monetary_truth() -> dict[str, Any]:
         if actual is None:
             missing.append({"account_id": expected["id"], "currency": expected["currency"]})
             continue
-        actual_balance = int(actual.credits_posted) - int(actual.debits_posted)
+        if isinstance(actual, dict):
+            actual_balance = int(actual["credits_posted"]) - int(actual["debits_posted"])
+        else:
+            actual_balance = int(actual.credits_posted) - int(actual.debits_posted)
         expected_balance = int(expected["expected_balance_minor"])
         if actual_balance != expected_balance:
             mismatches.append(
