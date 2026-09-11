@@ -27,8 +27,12 @@ jobs:
           git -C /tmp/hyperswitch fetch --depth 1 origin "$HYPERSWITCH_UPSTREAM_SHA"
           git -C /tmp/hyperswitch checkout --detach FETCH_HEAD
           test "$(git -C /tmp/hyperswitch rev-parse HEAD)" = "$HYPERSWITCH_UPSTREAM_SHA"
-      - name: Record upstream revision
-        run: git -C /tmp/hyperswitch rev-parse HEAD | tee /tmp/hyperswitch.sha
+      - name: Record upstream revision and patch identity
+        working-directory: /tmp/hyperswitch
+        run: |
+          git rev-parse HEAD | tee /tmp/hyperswitch.sha
+          cp crates/diesel_models/drop_id.patch /tmp/hyperswitch-drop-id-upstream.patch
+          sha256sum crates/diesel_models/drop_id.patch | tee /tmp/hyperswitch-drop-id-upstream.sha256
       - name: Apply exact CI diagnostics and Superposition init workaround
         working-directory: /tmp/hyperswitch
         run: |
@@ -59,11 +63,56 @@ jobs:
           PY
           grep -F 'bash /seed_superposition.sh' docker-compose.yml
           grep -F 'MUSITU_CI_PRESERVE_FAILED_STACK' scripts/setup.sh
+      - name: Remove only the proven redundant Diesel patch hunk
+        working-directory: /tmp/hyperswitch
+        run: |
+          python - <<'PY'
+          from hashlib import sha256
+          from pathlib import Path
+
+          patch = Path('crates/diesel_models/drop_id.patch')
+          raw = patch.read_bytes()
+          expected_sha256 = '7b0b6e5c5965e03355ad76cf24975ee83061e4c8a56a7c7ffdfe0b4ff4c2a36b'
+          actual_sha256 = sha256(raw).hexdigest()
+          if actual_sha256 != expected_sha256:
+              raise SystemExit(f'Unexpected upstream drop_id.patch SHA-256: {actual_sha256}')
+
+          stale_hunk = b'''@@ -1982,6 +1999,7 @@\n    api_keys,\n    authentication,\n    batch_blocklist_jobs,\n+    blocklist,\n    blocklist_fingerprint,\n    blocklist_lookup,\n    business_profile,\n'''
+          if raw.count(stale_hunk) != 1 or not raw.endswith(stale_hunk):
+              raise SystemExit('Proven stale hunk signature changed; refusing workaround')
+          patched = raw[:-len(stale_hunk)]
+          patch.write_bytes(patched)
+          print('Removed exactly redundant hunk #5; hunks #1-#4 remain intact')
+          PY
+          grep -F 'blocklist_fingerprint (merchant_id, fingerprint_id)' crates/diesel_models/drop_id.patch
+          if grep -Fq '@@ -1982,6 +1999,7 @@' crates/diesel_models/drop_id.patch; then
+            echo 'stale hunk still present' >&2
+            exit 1
+          fi
       - name: Start official standalone stack
         working-directory: /tmp/hyperswitch
         env:
           MUSITU_CI_PRESERVE_FAILED_STACK: '1'
         run: printf '3\n' | scripts/setup.sh
+      - name: Verify generated Diesel schema invariants
+        working-directory: /tmp/hyperswitch
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          s = Path('crates/diesel_models/src/schema.rs').read_text()
+          required = [
+              'blocklist (merchant_id, fingerprint_id)',
+              'blocklist_fingerprint (merchant_id, fingerprint_id)',
+              'blocklist_lookup (merchant_id, fingerprint)',
+              'configs (key)',
+              'locker_mock_up (card_id)',
+              'batch_blocklist_jobs,\n    blocklist,\n    blocklist_fingerprint,',
+          ]
+          missing = [item for item in required if item not in s]
+          if missing:
+              raise SystemExit(f'Generated Diesel schema invariant missing: {missing}')
+          print('Generated Diesel schema contains all required post-patch invariants')
+          PY
       - name: Verify Hyperswitch health and deep readiness
         run: |
           health_ok=0
@@ -111,7 +160,7 @@ jobs:
           docker compose logs --no-color superposition-init > /tmp/hyperswitch-superposition-init.log 2>&1 || true
           docker compose logs --no-color hyperswitch-server > /tmp/hyperswitch-server.log 2>&1 || true
           cp crates/diesel_models/src/schema.rs /tmp/hyperswitch-generated-schema.rs || true
-          cp crates/diesel_models/drop_id.patch /tmp/hyperswitch-drop-id.patch || true
+          cp crates/diesel_models/drop_id.patch /tmp/hyperswitch-drop-id-effective.patch || true
       - name: Upload evidence
         if: always()
         continue-on-error: true
@@ -128,4 +177,6 @@ jobs:
             /tmp/hyperswitch-superposition-init.log
             /tmp/hyperswitch-server.log
             /tmp/hyperswitch-generated-schema.rs
-            /tmp/hyperswitch-drop-id.patch
+            /tmp/hyperswitch-drop-id-upstream.patch
+            /tmp/hyperswitch-drop-id-upstream.sha256
+            /tmp/hyperswitch-drop-id-effective.patch
