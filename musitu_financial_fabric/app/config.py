@@ -68,6 +68,11 @@ class Settings:
     ecocash_client_secret: str = field(default_factory=lambda: _str("MUSITU_ECOCASH_CLIENT_SECRET"))
     max_single_payment_minor: int = field(default_factory=lambda: int(_str("MUSITU_MAX_SINGLE_PAYMENT_MINOR", "1000000")))
 
+    def __post_init__(self) -> None:
+        if self.environment == "production" and self.uses_postgres and self.ledger_backend == "tigerbeetle":
+            if not 1 <= self.tigerbeetle_operation_timeout_seconds <= 30:
+                raise ValueError("production TigerBeetle operation timeout must be between 1 and 30 seconds")
+
     @property
     def is_production(self) -> bool:
         return self.environment == "production"
