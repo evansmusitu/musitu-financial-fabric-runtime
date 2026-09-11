@@ -1,0 +1,5 @@
+*
+!musitu_financial_fabric/pyproject.toml
+!musitu_financial_fabric/constraints-ci.txt
+!musitu_financial_fabric/app/
+!musitu_financial_fabric/app/**
