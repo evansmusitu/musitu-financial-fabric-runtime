@@ -12,7 +12,7 @@ permissions:
   contents: read
 
 env:
-  MUSITU_KEYCLOAK_CI_IMAGE: quay.io/keycloak/keycloak:26.5.4
+  MUSITU_KEYCLOAK_CI_IMAGE: quay.io/keycloak/keycloak:26.5.4@sha256:ae8efb0d218d8921334b03a2dbee7069a0b868240691c50a3ffc9f42fabba8b4
   MUSITU_OPENFGA_CI_IMAGE: openfga/openfga:v1.18.1@sha256:efde89d24487da1a8bc37d85b61341f1fb7024943a1ded65f4b7d51a75666688
   MUSITU_OPENBAO_CI_IMAGE: openbao/openbao:2.6.1@sha256:15e90b578c970ae57b596ed51295380cd54f93860fe36758f05b455d71aae0e0
   MUSITU_OPENSEARCH_CI_IMAGE: opensearchproject/opensearch:3.8.0@sha256:39a8f8c63028e8b5d6b70539af1d0339b15a6729002dd5b3f4a65f520376fd30
@@ -22,7 +22,7 @@ jobs:
   keycloak:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Start Keycloak
         run: |
           docker run -d --name musitu-keycloak -p 8080:8080 \
@@ -37,18 +37,18 @@ jobs:
           p=json.load(open('/tmp/keycloak.json'))
           assert p['realm'] == 'master'
           PY
-      - name: Record resolved Keycloak image identity
+      - name: Verify resolved Keycloak image identity
         run: |
           configured="$(docker inspect musitu-keycloak --format '{{.Config.Image}}')"
           test "$configured" = "$MUSITU_KEYCLOAK_CI_IMAGE"
           image_id="$(docker inspect musitu-keycloak --format '{{.Image}}')"
           docker image inspect "$image_id" --format '{{json .RepoDigests}}' | tee /tmp/musitu-keycloak-repodigests.txt
-          grep -F 'quay.io/keycloak/keycloak@sha256:' /tmp/musitu-keycloak-repodigests.txt
+          grep -F 'quay.io/keycloak/keycloak@sha256:ae8efb0d218d8921334b03a2dbee7069a0b868240691c50a3ffc9f42fabba8b4' /tmp/musitu-keycloak-repodigests.txt
 
   openfga:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Start OpenFGA
         run: docker run -d --name musitu-openfga -p 8080:8080 "$MUSITU_OPENFGA_CI_IMAGE" run
       - name: Create and verify authorization store
@@ -70,7 +70,7 @@ jobs:
   openbao:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Start OpenBao dev server
         run: |
           docker run -d --name musitu-openbao -p 8200:8200 \
@@ -94,7 +94,7 @@ jobs:
   opensearch:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Start OpenSearch
         run: |
           docker run -d --name musitu-opensearch -p 9200:9200 \
@@ -120,7 +120,7 @@ jobs:
   telemetry-edge:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Create OpenTelemetry configuration
         run: |
           cat > "$RUNNER_TEMP/otel.yaml" <<'EOF'
