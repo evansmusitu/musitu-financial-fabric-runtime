@@ -7,8 +7,8 @@ on:
       - 'musitu_financial_fabric/app/**'
       - 'musitu_financial_fabric/pyproject.toml'
       - 'musitu_financial_fabric/constraints-ci.txt'
-      - 'musitu_financial_fabric/Dockerfile'
-      - 'musitu_financial_fabric/.dockerignore'
+      - 'deploy/musitu-financial-fabric/Dockerfile'
+      - 'deploy/musitu-financial-fabric/Dockerfile.dockerignore'
       - '.github/workflows/mff-production-image.yml'
   workflow_dispatch:
 
@@ -32,7 +32,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          grep -F "FROM $MUSITU_PYTHON_BASE" musitu_financial_fabric/Dockerfile
+          grep -F "FROM $MUSITU_PYTHON_BASE" deploy/musitu-financial-fabric/Dockerfile
           docker pull "$MUSITU_PYTHON_BASE"
           docker image inspect "$MUSITU_PYTHON_BASE" --format '{{json .RepoDigests}}' | tee /tmp/musitu-python-base.txt
           grep -F 'sha256:782412e85d0f0984994c290652577d4018aff08145c85b262bb63dc0c7522254' /tmp/musitu-python-base.txt
@@ -42,9 +42,10 @@ jobs:
         run: |
           set -euo pipefail
           docker build --pull --platform linux/amd64 \
+            --file deploy/musitu-financial-fabric/Dockerfile \
             --build-arg MUSITU_BUILD_COMMIT="$GITHUB_SHA" \
             --tag "$MUSITU_IMAGE" \
-            musitu_financial_fabric
+            .
           docker image inspect "$MUSITU_IMAGE" --format '{{.Id}}' | tee /tmp/musitu-image-id.txt
 
       - name: Verify image identity and non-root contract
