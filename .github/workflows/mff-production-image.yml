@@ -20,6 +20,7 @@ env:
   MUSITU_PYTHON_BASE: python:3.12.14-slim-bookworm@sha256:782412e85d0f0984994c290652577d4018aff08145c85b262bb63dc0c7522254
   MUSITU_POSTGRES_CI_IMAGE: postgres@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685
   MUSITU_TIGERBEETLE_CI_IMAGE: ghcr.io/tigerbeetle/tigerbeetle@sha256:b140e2285fcc1ccd6a7a38a1e31ef13f98c3b511b29acc0a935d597546aa96ff
+  MUSITU_MOBY_PROFILES_COMMIT: 61eaf32614c7c71b60bd8927d3e6a4ffc8ff1f31
 
 jobs:
   production-image:
@@ -90,10 +91,66 @@ jobs:
           fi
           cat /tmp/musitu-image-sandbox-health.json | tee /tmp/musitu-image-sandbox-proof.txt
 
+      - name: Prepare pinned TigerBeetle-compatible seccomp profile
+        shell: bash
+        run: |
+          set -euo pipefail
+          profile_repo="$RUNNER_TEMP/moby-profiles"
+          profile_out="$RUNNER_TEMP/musitu-tigerbeetle-seccomp.json"
+          git init "$profile_repo"
+          git -C "$profile_repo" remote add origin https://github.com/moby/profiles.git
+          git -C "$profile_repo" fetch --depth 1 origin "$MUSITU_MOBY_PROFILES_COMMIT"
+          git -C "$profile_repo" checkout --detach FETCH_HEAD
+          test "$(git -C "$profile_repo" rev-parse HEAD)" = "$MUSITU_MOBY_PROFILES_COMMIT"
+
+          python3 - "$profile_repo/seccomp/default.json" "$profile_out" <<'PY'
+          import json
+          import sys
+
+          source, destination = sys.argv[1:3]
+          profile = json.load(open(source, encoding='utf-8'))
+          assert profile.get('defaultAction') == 'SCMP_ACT_ERRNO', profile.get('defaultAction')
+          required = {'io_uring_setup', 'io_uring_enter', 'io_uring_register'}
+          already_allowed = {
+              name
+              for rule in profile.get('syscalls', [])
+              if rule.get('action') == 'SCMP_ACT_ALLOW'
+              for name in rule.get('names', [])
+          }
+          overlap = required & already_allowed
+          assert not overlap, f'Pinned Moby profile unexpectedly already permits: {sorted(overlap)}'
+          profile['syscalls'].insert(0, {
+              'names': sorted(required),
+              'action': 'SCMP_ACT_ALLOW',
+          })
+          json.dump(profile, open(destination, 'w', encoding='utf-8'), indent=2, sort_keys=False)
+          with open(destination, 'a', encoding='utf-8') as handle:
+              handle.write('\n')
+          allowed_after = {
+              name
+              for rule in profile['syscalls']
+              if rule.get('action') == 'SCMP_ACT_ALLOW'
+              for name in rule.get('names', [])
+          }
+          assert required <= allowed_after
+          assert profile['defaultAction'] == 'SCMP_ACT_ERRNO'
+          PY
+
+          python3 -m json.tool "$profile_out" >/dev/null
+          sha256sum "$profile_out" | tee /tmp/musitu-seccomp.sha256
+          printf 'moby_profiles_commit=%s\n' "$MUSITU_MOBY_PROFILES_COMMIT" | tee /tmp/musitu-seccomp-source.txt
+          grep -F 'SCMP_ACT_ERRNO' "$profile_out" >/dev/null
+          grep -F 'io_uring_setup' "$profile_out" >/dev/null
+          grep -F 'io_uring_enter' "$profile_out" >/dev/null
+          grep -F 'io_uring_register' "$profile_out" >/dev/null
+
       - name: Start pinned monetary services
         shell: bash
         run: |
           set -euo pipefail
+          seccomp="$RUNNER_TEMP/musitu-tigerbeetle-seccomp.json"
+          test -s "$seccomp"
+
           docker run -d --name musitu-image-pg \
             -e POSTGRES_PASSWORD=musitu-ci \
             -p 5432:5432 \
@@ -110,10 +167,10 @@ jobs:
           if [ "$pg_ready" != 1 ]; then docker logs musitu-image-pg; exit 1; fi
 
           mkdir -p "$RUNNER_TEMP/tb-image"
-          docker run --rm --security-opt seccomp=unconfined \
+          docker run --rm --security-opt seccomp="$seccomp" \
             -v "$RUNNER_TEMP/tb-image:/data" "$MUSITU_TIGERBEETLE_CI_IMAGE" \
             format --cluster=1 --replica=0 --replica-count=1 /data/0_0.tigerbeetle
-          docker run -d --name musitu-image-tb --security-opt seccomp=unconfined \
+          docker run -d --name musitu-image-tb --security-opt seccomp="$seccomp" \
             -p 3000:3000 -v "$RUNNER_TEMP/tb-image:/data" "$MUSITU_TIGERBEETLE_CI_IMAGE" \
             start --addresses=0.0.0.0:3000 --cache-grid=256MiB /data/0_0.tigerbeetle
 
@@ -128,12 +185,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          seccomp="$RUNNER_TEMP/musitu-tigerbeetle-seccomp.json"
+          test -s "$seccomp"
           docker run -d --name musitu-image-production \
             --network host \
             --read-only \
             --tmpfs /tmp:rw,nosuid,nodev,noexec,size=64m,mode=1777 \
             --cap-drop ALL \
             --security-opt no-new-privileges:true \
+            --security-opt seccomp="$seccomp" \
             -e MUSITU_ENV=production \
             -e MUSITU_LIVE_FUNDS_ENABLED=false \
             -e MUSITU_PRODUCTION_MODE=shadow \
@@ -192,6 +252,9 @@ jobs:
             cat /tmp/musitu-image-contract.txt 2>/dev/null || true
             echo '=== base ==='
             cat /tmp/musitu-python-base.txt 2>/dev/null || true
+            echo '=== seccomp source ==='
+            cat /tmp/musitu-seccomp-source.txt 2>/dev/null || true
+            cat /tmp/musitu-seccomp.sha256 2>/dev/null || true
             echo '=== sandbox ==='
             cat /tmp/musitu-image-sandbox-proof.txt 2>/dev/null || true
             echo '=== production shadow ==='
