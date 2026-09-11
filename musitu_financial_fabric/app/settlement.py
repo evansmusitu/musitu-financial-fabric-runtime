@@ -24,18 +24,63 @@ def _rail_account(rail: str, currency: str) -> dict:
     return create_account("system", rail, currency, "rail_clearing")
 
 
+def _claim_provider_settlement(*, provider: str, payment_id: str, provider_event_id: str) -> dict:
+    with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = conn.execute("SELECT * FROM payment_intents WHERE id=?", (payment_id,)).fetchone()
+            if not row:
+                raise ProviderSettlementError("payment not found")
+            payment = dict(row)
+            if payment["rail"] != provider:
+                raise ProviderSettlementError("provider does not match payment rail")
+            if payment["status"] == "succeeded":
+                conn.execute("COMMIT")
+                return payment
+            if payment["status"] in {"failed", "cancelled", "refunded"}:
+                raise ProviderSettlementError(f"cannot settle payment in status {payment['status']}")
+            if payment["status"] == "settling":
+                conn.execute("COMMIT")
+                return payment
+
+            updated = conn.execute(
+                "UPDATE payment_intents SET status='settling',updated_at=? WHERE id=? AND status=?",
+                (now_iso(), payment_id, payment["status"]),
+            )
+            if updated.rowcount != 1:
+                current = conn.execute("SELECT status FROM payment_intents WHERE id=?", (payment_id,)).fetchone()
+                if current and current["status"] == "succeeded":
+                    conn.execute("COMMIT")
+                    return _payment(payment_id)
+                raise ProviderSettlementError("payment state changed before settlement claim")
+            append_audit(
+                "payment.provider_settlement_started",
+                payment_id,
+                {"provider": provider, "provider_event_id": provider_event_id, "prior_status": payment["status"]},
+                conn=conn,
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
+    return _payment(payment_id)
+
+
 def provider_succeed(*, provider: str, payment_id: str, provider_event_id: str) -> dict:
     if not settings.is_production:
         from .service import settle_payment
         return settle_payment(payment_id, provider_event_id)
     assert_live_funds_allowed()
-    payment = _payment(payment_id)
-    if payment["rail"] != provider:
-        raise ProviderSettlementError("provider does not match payment rail")
+
+    payment = _claim_provider_settlement(
+        provider=provider,
+        payment_id=payment_id,
+        provider_event_id=provider_event_id,
+    )
     if payment["status"] == "succeeded":
         return payment
-    if payment["status"] in {"failed", "cancelled", "refunded"}:
-        raise ProviderSettlementError(f"cannot settle payment in status {payment['status']}")
+
     rail_account = _rail_account(payment["rail"], payment["currency"])
     post(
         reference=f"payment:{payment_id}",
@@ -45,21 +90,27 @@ def provider_succeed(*, provider: str, payment_id: str, provider_event_id: str) 
             (payment["destination_account_id"], int(payment["amount_minor"])),
         ],
     )
+
     with connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
         try:
             updated = conn.execute(
-                "UPDATE payment_intents SET status='succeeded',updated_at=? WHERE id=? AND status NOT IN ('failed','cancelled','refunded')",
+                "UPDATE payment_intents SET status='succeeded',updated_at=? WHERE id=? AND status='settling'",
                 (now_iso(), payment_id),
             )
             if updated.rowcount != 1:
+                current = conn.execute("SELECT status FROM payment_intents WHERE id=?", (payment_id,)).fetchone()
+                if current and current["status"] == "succeeded":
+                    conn.execute("COMMIT")
+                    return _payment(payment_id)
                 raise ProviderSettlementError("payment state changed before settlement commit")
             append_audit("payment.provider_succeeded", payment_id, {
                 "provider": provider, "provider_event_id": provider_event_id,
             }, conn=conn)
             conn.execute("COMMIT")
         except Exception:
-            conn.execute("ROLLBACK")
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
             raise
     return _payment(payment_id)
 
@@ -69,27 +120,40 @@ def provider_fail(*, provider: str, payment_id: str, provider_event_id: str) -> 
         from .service import fail_payment
         return fail_payment(payment_id, provider_event_id)
     assert_live_funds_allowed()
-    payment = _payment(payment_id)
-    if payment["rail"] != provider:
-        raise ProviderSettlementError("provider does not match payment rail")
-    if payment["status"] == "failed":
-        return payment
-    if payment["status"] == "succeeded":
-        raise ProviderSettlementError("cannot fail a succeeded payment")
+
     with connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
         try:
+            row = conn.execute("SELECT * FROM payment_intents WHERE id=?", (payment_id,)).fetchone()
+            if not row:
+                raise ProviderSettlementError("payment not found")
+            payment = dict(row)
+            if payment["rail"] != provider:
+                raise ProviderSettlementError("provider does not match payment rail")
+            if payment["status"] == "failed":
+                conn.execute("COMMIT")
+                return payment
+            if payment["status"] == "succeeded":
+                raise ProviderSettlementError("cannot fail a succeeded payment")
+            if payment["status"] == "settling":
+                raise ProviderSettlementError("cannot fail payment while settlement is in progress")
+
             updated = conn.execute(
-                "UPDATE payment_intents SET status='failed',updated_at=? WHERE id=? AND status!='succeeded'",
-                (now_iso(), payment_id),
+                "UPDATE payment_intents SET status='failed',updated_at=? WHERE id=? AND status=?",
+                (now_iso(), payment_id, payment["status"]),
             )
             if updated.rowcount != 1:
+                current = conn.execute("SELECT status FROM payment_intents WHERE id=?", (payment_id,)).fetchone()
+                if current and current["status"] == "failed":
+                    conn.execute("COMMIT")
+                    return _payment(payment_id)
                 raise ProviderSettlementError("payment state changed before failure commit")
             append_audit("payment.provider_failed", payment_id, {
                 "provider": provider, "provider_event_id": provider_event_id,
             }, conn=conn)
             conn.execute("COMMIT")
         except Exception:
-            conn.execute("ROLLBACK")
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
             raise
     return _payment(payment_id)
