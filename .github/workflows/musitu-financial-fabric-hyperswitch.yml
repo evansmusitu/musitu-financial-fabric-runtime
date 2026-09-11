@@ -77,7 +77,7 @@ jobs:
           if actual_sha256 != expected_sha256:
               raise SystemExit(f'Unexpected upstream drop_id.patch SHA-256: {actual_sha256}')
 
-          stale_hunk = b'''@@ -1982,6 +1999,7 @@\n    api_keys,\n    authentication,\n    batch_blocklist_jobs,\n+    blocklist,\n    blocklist_fingerprint,\n    blocklist_lookup,\n    business_profile,\n'''
+          stale_hunk = b'''@@ -1982,6 +1999,7 @@\n     api_keys,\n     authentication,\n     batch_blocklist_jobs,\n+    blocklist,\n     blocklist_fingerprint,\n     blocklist_lookup,\n     business_profile,\n'''
           if raw.count(stale_hunk) != 1 or not raw.endswith(stale_hunk):
               raise SystemExit('Proven stale hunk signature changed; refusing workaround')
           patched = raw[:-len(stale_hunk)]
