@@ -61,6 +61,14 @@ async def test_active_right_scope_wrong_audience_is_rejected(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_blank_required_scope_cannot_disable_scope_enforcement(monkeypatch):
+    monkeypatch.setattr(auth, "settings", _settings(auth_required_scope=""))
+    monkeypatch.setattr(auth.httpx, "AsyncClient", lambda *args, **kwargs: _Client(_payload("musitu-api")))
+    with pytest.raises(ValueError, match="scope"):
+        await auth._introspect("token")
+
+
+@pytest.mark.asyncio
 async def test_client_id_is_default_expected_audience(monkeypatch):
     monkeypatch.setattr(auth, "settings", _settings())
     monkeypatch.setattr(auth.httpx, "AsyncClient", lambda *args, **kwargs: _Client(_payload(["account", "musitu-api"])))
