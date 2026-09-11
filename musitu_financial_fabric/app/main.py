@@ -14,6 +14,7 @@ from .component_registry import component_manifest, probe_components
 from .config import settings
 from .db import init_db
 from .ledger import balance, get_account
+from .merchant_lifecycle import MerchantLifecycleError, review_merchant
 from .production import ProductionGateError, enforce_safe_startup, production_readiness
 from .protocols.adapters import gsma_transaction, iso20022_pacs008, mpp_challenge, open_payments_incoming, stripe_payment_intent, x402_challenge
 from .reconciliation import reconcile_monetary_truth
@@ -41,6 +42,11 @@ async def production_gate_error(_: Request, exc: ProductionGateError):
 class MerchantCreate(BaseModel):
     name: str = Field(min_length=2, max_length=160)
     currency: str = Field(default="USD", min_length=3, max_length=3)
+
+
+class MerchantReview(BaseModel):
+    status: str = Field(min_length=5, max_length=16)
+    evidence_ref: str = Field(min_length=1, max_length=512)
 
 
 class IdentityCreate(BaseModel):
@@ -176,6 +182,24 @@ def mandate_get(mandate_id: str):
 @app.post("/v1/merchants")
 def merchant_create(payload: MerchantCreate):
     return create_merchant(payload.name, payload.currency)
+
+
+@app.post("/v1/merchants/{merchant_id}/review")
+def merchant_review(merchant_id: str, payload: MerchantReview, request: Request):
+    principal = getattr(request.state, "principal", {}) or {}
+    authorization = getattr(request.state, "authorization_decision", {}) or {}
+    actor = str(principal.get("sub") or principal.get("client_id") or ("sandbox" if not settings.is_production else "")).strip()
+    decision_id = str(authorization.get("decision_id") or ("sandbox" if not settings.is_production else "")).strip()
+    try:
+        return review_merchant(
+            merchant_id=merchant_id,
+            target_status=payload.status,
+            evidence_ref=payload.evidence_ref,
+            actor=actor,
+            authorization_decision_id=decision_id,
+        )
+    except MerchantLifecycleError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @app.get("/v1/accounts/{account_id}")
