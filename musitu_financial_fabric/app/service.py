@@ -351,6 +351,13 @@ def _persist_production_dispatch(*, payment_id: str, merchant_id: str, destinati
     with connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
         try:
+            lock_suffix = " FOR UPDATE" if settings.uses_postgres else ""
+            merchant = conn.execute(
+                "SELECT status FROM merchants WHERE id=?" + lock_suffix,
+                (merchant_id,),
+            ).fetchone()
+            if not merchant or merchant["status"] != "active":
+                raise PaymentError("merchant is not active at production dispatch claim")
             conn.execute(
                 """INSERT INTO payment_intents
                 (id,merchant_id,destination_account_id,amount_minor,currency,rail,payer_ref,description,status,external_reference,idempotency_key,created_at,updated_at)
