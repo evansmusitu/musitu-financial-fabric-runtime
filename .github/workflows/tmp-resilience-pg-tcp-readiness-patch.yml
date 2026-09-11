@@ -1,0 +1,46 @@
+name: Temporary resilience PostgreSQL TCP-readiness patch
+
+on:
+  push:
+    branches: [tmp-mff-resilience-pg-tcp-readiness-20260911]
+    paths:
+      - '.github/workflows/tmp-resilience-pg-tcp-readiness-patch.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apply-exact-patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: tmp-mff-resilience-pg-tcp-readiness-20260911
+          fetch-depth: 1
+      - name: Require final PostgreSQL TCP server readiness
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('.github/workflows/mff-production-resilience.yml')
+          text = path.read_text(encoding='utf-8')
+          old = 'docker exec musitu-resilience-pg pg_isready -U postgres'
+          new = 'docker exec musitu-resilience-pg pg_isready -h 127.0.0.1 -U postgres'
+          count = text.count(old)
+          if count != 4:
+              raise SystemExit(f'expected exactly 4 PostgreSQL readiness probes, found {count}')
+          updated = text.replace(old, new)
+          if updated.count(new) != 4:
+              raise SystemExit('replacement count mismatch')
+          path.write_text(updated, encoding='utf-8')
+          PY
+          git diff --check
+          git diff -- .github/workflows/mff-production-resilience.yml
+          git config user.name 'musitu-ci-patch'
+          git config user.email 'musitu-ci-patch@users.noreply.github.com'
+          git add .github/workflows/mff-production-resilience.yml
+          git commit -m 'Probe final PostgreSQL server over TCP in resilience CI'
+          git push origin HEAD:tmp-mff-resilience-pg-tcp-readiness-20260911
