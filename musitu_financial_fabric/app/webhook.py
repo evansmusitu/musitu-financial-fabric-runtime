@@ -92,6 +92,16 @@ def begin_webhook_delivery(provider: str, body: bytes) -> str:
                 conn.execute("COMMIT")
                 return "passthrough"
 
+            receipt = conn.execute(
+                "SELECT provider,payload_hash FROM webhook_events WHERE event_id=?",
+                (event_id,),
+            ).fetchone()
+            if receipt and (
+                str(receipt["provider"]).lower() != provider
+                or str(receipt["payload_hash"]) != digest
+            ):
+                raise WebhookReplayConflict("webhook event id conflicts with an existing receipt payload")
+
             inserted = conn.execute(
                 """INSERT INTO webhook_delivery_state
                    (event_id,provider,payload_hash,payment_id,target_status,state,attempts,started_at,updated_at,last_error)
