@@ -1,0 +1,460 @@
+name: MUSITU Financial Fabric — Production Resilience Evidence
+
+on:
+  push:
+    branches: [musitu-financial-fabric-production-readiness]
+    paths:
+      - 'musitu_financial_fabric/**'
+      - '.github/workflows/mff-production-resilience.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  MUSITU_POSTGRES_CI_IMAGE: postgres@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685
+  MUSITU_TIGERBEETLE_CI_IMAGE: ghcr.io/tigerbeetle/tigerbeetle@sha256:b140e2285fcc1ccd6a7a38a1e31ef13f98c3b511b29acc0a935d597546aa96ff
+
+jobs:
+  production-resilience:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: musitu_financial_fabric
+    env:
+      MUSITU_ENV: production
+      MUSITU_LIVE_FUNDS_ENABLED: 'false'
+      MUSITU_PRODUCTION_MODE: shadow
+      MUSITU_METADATA_DB_URL: postgresql://postgres:musitu-ci@127.0.0.1:5432/postgres
+      MUSITU_LEDGER_BACKEND: tigerbeetle
+      MUSITU_TIGERBEETLE_CLUSTER_ID: '1'
+      MUSITU_TIGERBEETLE_ADDRESSES: 127.0.0.1:3000
+      MUSITU_AUTH_INTROSPECTION_URL: http://127.0.0.1:18080/introspect
+      MUSITU_AUTH_CLIENT_ID: musitu-resilience
+      MUSITU_AUTH_CLIENT_SECRET: test-only-resilience-secret
+      MUSITU_AUTH_REQUIRED_SCOPE: musitu.payments
+      MUSITU_AUTHZ_GATE_URL: http://127.0.0.1:18081/decision
+      MUSITU_RISK_GATE_URL: http://127.0.0.1:18082/decision
+      MUSITU_ECOCASH_WEBHOOK_SECRET: 0123456789abcdef0123456789abcdef
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Install production application
+        run: python -m pip install -e .
+
+      - name: Start pinned PostgreSQL and TigerBeetle
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run -d --name musitu-resilience-pg \
+            -e POSTGRES_PASSWORD=musitu-ci \
+            -p 5432:5432 \
+            "$MUSITU_POSTGRES_CI_IMAGE"
+
+          for i in {1..60}; do
+            if docker exec musitu-resilience-pg pg_isready -h 127.0.0.1 -U postgres >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          docker exec musitu-resilience-pg pg_isready -h 127.0.0.1 -U postgres
+
+          mkdir -p "$RUNNER_TEMP/tb-resilience"
+          docker run --rm --security-opt seccomp=unconfined \
+            -v "$RUNNER_TEMP/tb-resilience:/data" \
+            "$MUSITU_TIGERBEETLE_CI_IMAGE" \
+            format --cluster=1 --replica=0 --replica-count=1 /data/0_0.tigerbeetle
+          docker run -d --name musitu-resilience-tb --security-opt seccomp=unconfined \
+            -p 3000:3000 \
+            -v "$RUNNER_TEMP/tb-resilience:/data" \
+            "$MUSITU_TIGERBEETLE_CI_IMAGE" \
+            start --addresses=0.0.0.0:3000 --cache-grid=256MiB /data/0_0.tigerbeetle
+
+          ready=0
+          for i in {1..30}; do
+            if (echo > /dev/tcp/127.0.0.1/3000) >/dev/null 2>&1; then ready=1; break; fi
+            sleep 1
+          done
+          if [ "$ready" != 1 ]; then
+            docker logs musitu-resilience-tb
+            exit 1
+          fi
+
+          {
+            echo '=== pinned service identities ==='
+            echo "postgres=$MUSITU_POSTGRES_CI_IMAGE"
+            docker image inspect "$MUSITU_POSTGRES_CI_IMAGE" --format '{{json .RepoDigests}}'
+            echo "tigerbeetle=$MUSITU_TIGERBEETLE_CI_IMAGE"
+            docker image inspect "$MUSITU_TIGERBEETLE_CI_IMAGE" --format '{{json .RepoDigests}}'
+          } | tee /tmp/resilience-services.txt
+          grep -F 'sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685' /tmp/resilience-services.txt
+          grep -F 'sha256:b140e2285fcc1ccd6a7a38a1e31ef13f98c3b511b29acc0a935d597546aa96ff' /tmp/resilience-services.txt
+
+      - name: Prove safe dark-production startup
+        run: |
+          python - <<'PY' | tee /tmp/resilience-startup.txt
+          from app.db import init_db
+          from app.production import enforce_safe_startup, production_readiness
+
+          enforce_safe_startup()
+          init_db()
+          readiness = production_readiness()
+          assert readiness['ready_for_live_funds'] is False, readiness
+          assert any(not row['ok'] and row['category'] == 'external' for row in readiness['checks']), readiness
+          print('PASS: production shadow startup is accepted while live funds remain fail-closed')
+          PY
+
+      - name: Concurrent load integrity gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 150s python - <<'PY' | tee /tmp/resilience-load.log
+          import json
+          import time
+          from concurrent.futures import ThreadPoolExecutor, as_completed
+          from pathlib import Path
+
+          from app.audit import verify_audit_chain
+          from app.ledger import balance, create_account, post
+          from app.reconciliation import reconcile_monetary_truth
+
+          operations = 240
+          workers = 12
+          source = create_account('system', 'resilience-source', 'USD', 'rail_clearing')
+          destination = create_account('merchant', 'resilience-destination', 'USD', 'settlement')
+
+          def execute(index: int) -> float:
+              started = time.perf_counter()
+              post(
+                  reference=f'resilience-load-{index:04d}',
+                  memo='MUSITU bounded concurrent production-shadow load evidence',
+                  postings=[(source['id'], -1), (destination['id'], 1)],
+              )
+              return time.perf_counter() - started
+
+          started = time.perf_counter()
+          latencies = []
+          with ThreadPoolExecutor(max_workers=workers) as pool:
+              futures = [pool.submit(execute, index) for index in range(operations)]
+              for future in as_completed(futures):
+                  latencies.append(future.result())
+          elapsed = time.perf_counter() - started
+
+          assert len(latencies) == operations
+          assert elapsed < 120, elapsed
+          assert balance(source['id']) == -operations
+          assert balance(destination['id']) == operations
+          truth = reconcile_monetary_truth()
+          assert truth['applicable'] is True and truth['consistent'] is True, truth
+          valid, audit_count, broken_at = verify_audit_chain()
+          assert valid, (audit_count, broken_at)
+
+          ordered = sorted(latencies)
+          def percentile(fraction: float) -> float:
+              index = min(len(ordered) - 1, max(0, int((len(ordered) - 1) * fraction)))
+              return ordered[index] * 1000.0
+
+          metrics = {
+              'operations': operations,
+              'workers': workers,
+              'elapsed_seconds': round(elapsed, 6),
+              'throughput_ops_per_second': round(operations / elapsed, 3),
+              'latency_ms_p50': round(percentile(0.50), 3),
+              'latency_ms_p95': round(percentile(0.95), 3),
+              'latency_ms_p99': round(percentile(0.99), 3),
+              'source_balance_minor': balance(source['id']),
+              'destination_balance_minor': balance(destination['id']),
+              'audit_rows': audit_count,
+              'reconciliation': truth,
+          }
+          Path('/tmp/resilience-load.json').write_text(json.dumps(metrics, indent=2, sort_keys=True) + '\n')
+          print(json.dumps(metrics, sort_keys=True))
+          print('PASS: concurrent load completed with exact balances, valid audit chain, and zero reconciliation drift')
+          PY
+
+      - name: Timed bounded soak integrity gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 240s python - <<'PY' | tee /tmp/resilience-soak.log
+          import json
+          import time
+          from pathlib import Path
+
+          from app.audit import verify_audit_chain
+          from app.ledger import balance, create_account, post
+          from app.reconciliation import reconcile_monetary_truth
+
+          duration_seconds = 180.0
+          source = create_account('system', 'resilience-source', 'USD', 'rail_clearing')
+          destination = create_account('merchant', 'resilience-destination', 'USD', 'settlement')
+          source_before = balance(source['id'])
+          destination_before = balance(destination['id'])
+          count = 0
+          started = time.monotonic()
+
+          while time.monotonic() - started < duration_seconds:
+              op_started = time.monotonic()
+              post(
+                  reference=f'resilience-soak-{count:06d}',
+                  memo='MUSITU bounded production-shadow soak evidence',
+                  postings=[(source['id'], -1), (destination['id'], 1)],
+              )
+              count += 1
+              if count % 25 == 0:
+                  truth = reconcile_monetary_truth()
+                  assert truth['consistent'] is True, truth
+              spent = time.monotonic() - op_started
+              if spent < 0.5:
+                  time.sleep(0.5 - spent)
+
+          elapsed = time.monotonic() - started
+          assert elapsed >= duration_seconds
+          assert count >= 120, count
+          assert balance(source['id']) == source_before - count
+          assert balance(destination['id']) == destination_before + count
+          truth = reconcile_monetary_truth()
+          assert truth['applicable'] is True and truth['consistent'] is True, truth
+          valid, audit_count, broken_at = verify_audit_chain()
+          assert valid, (audit_count, broken_at)
+
+          metrics = {
+              'duration_seconds': round(elapsed, 3),
+              'operations': count,
+              'source_balance_delta_minor': balance(source['id']) - source_before,
+              'destination_balance_delta_minor': balance(destination['id']) - destination_before,
+              'audit_rows': audit_count,
+              'reconciliation': truth,
+          }
+          Path('/tmp/resilience-soak.json').write_text(json.dumps(metrics, indent=2, sort_keys=True) + '\n')
+          print(json.dumps(metrics, sort_keys=True))
+          print('PASS: bounded timed soak sustained monetary and audit integrity for the full window')
+          PY
+
+      - name: Inject TigerBeetle outage and prove fail-closed recovery
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker stop musitu-resilience-tb
+
+          set +e
+          timeout 30s python - <<'PY' | tee /tmp/resilience-tb-outage.txt
+          from app.db import connect
+          from app.ledger import create_account, post
+
+          source = create_account('system', 'resilience-source', 'USD', 'rail_clearing')
+          destination = create_account('merchant', 'resilience-destination', 'USD', 'settlement')
+          try:
+              post(
+                  reference='resilience-tb-outage',
+                  memo='must fail while TigerBeetle is unavailable',
+                  postings=[(source['id'], -7), (destination['id'], 7)],
+              )
+          except Exception as exc:
+              print(f'EXPECTED_FAIL_CLOSED={type(exc).__name__}:{exc}')
+          else:
+              raise SystemExit('FAIL: transfer succeeded while TigerBeetle was unavailable')
+
+          with connect() as conn:
+              row = conn.execute("SELECT id FROM journal_entries WHERE reference=?", ('resilience-tb-outage',)).fetchone()
+          assert row is None, row
+          print('PASS: TigerBeetle outage produced no committed PostgreSQL journal')
+          PY
+          outage_rc=$?
+          set -e
+          if [ "$outage_rc" -ne 0 ]; then
+            echo "TigerBeetle outage probe failed or hung (rc=$outage_rc)" >&2
+            exit "$outage_rc"
+          fi
+
+          docker start musitu-resilience-tb
+          ready=0
+          for i in {1..30}; do
+            if (echo > /dev/tcp/127.0.0.1/3000) >/dev/null 2>&1; then ready=1; break; fi
+            sleep 1
+          done
+          test "$ready" = 1
+
+          python - <<'PY' | tee -a /tmp/resilience-tb-outage.txt
+          from app.db import connect
+          from app.ledger import create_account, post
+          from app.reconciliation import reconcile_monetary_truth
+
+          source = create_account('system', 'resilience-source', 'USD', 'rail_clearing')
+          destination = create_account('merchant', 'resilience-destination', 'USD', 'settlement')
+          with connect() as conn:
+              assert conn.execute("SELECT id FROM journal_entries WHERE reference=?", ('resilience-tb-outage',)).fetchone() is None
+          journal = post(
+              reference='resilience-tb-outage',
+              memo='retry after TigerBeetle recovery',
+              postings=[(source['id'], -7), (destination['id'], 7)],
+          )
+          assert journal
+          truth = reconcile_monetary_truth()
+          assert truth['consistent'] is True, truth
+          print('PASS: identical operation recovered after TigerBeetle restart with reconciliation green')
+          PY
+
+      - name: Inject PostgreSQL outage and prove fail-closed recovery
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY' > /tmp/resilience-pg-baseline.json
+          import json
+          from app.ledger import balance, create_account
+          source = create_account('system', 'resilience-source', 'USD', 'rail_clearing')
+          destination = create_account('merchant', 'resilience-destination', 'USD', 'settlement')
+          print(json.dumps({'source': balance(source['id']), 'destination': balance(destination['id'])}))
+          PY
+
+          docker stop musitu-resilience-pg
+
+          set +e
+          timeout 20s python - <<'PY' | tee /tmp/resilience-pg-outage.txt
+          from app.ledger import create_account
+          try:
+              create_account('system', 'resilience-pg-outage-probe', 'USD', 'rail_clearing')
+          except Exception as exc:
+              print(f'EXPECTED_FAIL_CLOSED={type(exc).__name__}:{exc}')
+          else:
+              raise SystemExit('FAIL: metadata write succeeded while PostgreSQL was unavailable')
+          print('PASS: PostgreSQL outage failed closed')
+          PY
+          outage_rc=$?
+          set -e
+          if [ "$outage_rc" -ne 0 ]; then
+            echo "PostgreSQL outage probe failed or hung (rc=$outage_rc)" >&2
+            exit "$outage_rc"
+          fi
+
+          docker start musitu-resilience-pg
+          for i in {1..60}; do
+            if docker exec musitu-resilience-pg pg_isready -h 127.0.0.1 -U postgres >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          docker exec musitu-resilience-pg pg_isready -h 127.0.0.1 -U postgres
+
+          python - <<'PY' | tee -a /tmp/resilience-pg-outage.txt
+          import json
+          from pathlib import Path
+          from app.ledger import balance, create_account, post
+          from app.reconciliation import reconcile_monetary_truth
+
+          baseline = json.loads(Path('/tmp/resilience-pg-baseline.json').read_text())
+          source = create_account('system', 'resilience-source', 'USD', 'rail_clearing')
+          destination = create_account('merchant', 'resilience-destination', 'USD', 'settlement')
+          assert balance(source['id']) == baseline['source']
+          assert balance(destination['id']) == baseline['destination']
+          post(
+              reference='resilience-pg-recovered',
+              memo='operation after PostgreSQL recovery',
+              postings=[(source['id'], -11), (destination['id'], 11)],
+          )
+          assert balance(source['id']) == baseline['source'] - 11
+          assert balance(destination['id']) == baseline['destination'] + 11
+          truth = reconcile_monetary_truth()
+          assert truth['consistent'] is True, truth
+          print('PASS: PostgreSQL restart preserved state and post-recovery reconciliation is green')
+          PY
+
+      - name: Prove PostgreSQL backup/restore and TigerBeetle process recreation
+        shell: bash
+        run: |
+          set -euo pipefail
+          dump="$RUNNER_TEMP/musitu-resilience.dump"
+          docker exec musitu-resilience-pg pg_dump -U postgres -Fc postgres > "$dump"
+          test -s "$dump"
+          sha256sum "$dump" | tee /tmp/resilience-postgres-dump.sha256
+
+          docker exec musitu-resilience-pg createdb -U postgres musitu_resilience_restore
+          cat "$dump" | docker exec -i musitu-resilience-pg pg_restore -U postgres -d musitu_resilience_restore
+
+          MUSITU_METADATA_DB_URL=postgresql://postgres:musitu-ci@127.0.0.1:5432/musitu_resilience_restore \
+          python - <<'PY' | tee /tmp/resilience-dr.txt
+          from app.audit import verify_audit_chain
+          from app.db import connect
+          from app.reconciliation import reconcile_monetary_truth
+
+          with connect() as conn:
+              journals = int(conn.execute('SELECT COUNT(*) AS n FROM journal_entries').fetchone()['n'])
+              postings = int(conn.execute('SELECT COUNT(*) AS n FROM ledger_postings').fetchone()['n'])
+              audits = int(conn.execute('SELECT COUNT(*) AS n FROM audit_log').fetchone()['n'])
+          assert journals > 0 and postings == journals * 2 and audits > 0, (journals, postings, audits)
+          valid, count, broken_at = verify_audit_chain()
+          assert valid, (count, broken_at)
+          truth = reconcile_monetary_truth()
+          assert truth['applicable'] is True and truth['consistent'] is True, truth
+          print(f'PASS: restored PostgreSQL copy journals={journals} postings={postings} audits={audits} and reconciles with TigerBeetle')
+          PY
+
+          docker stop musitu-resilience-tb
+          docker rm musitu-resilience-tb
+          docker run -d --name musitu-resilience-tb --security-opt seccomp=unconfined \
+            -p 3000:3000 \
+            -v "$RUNNER_TEMP/tb-resilience:/data" \
+            "$MUSITU_TIGERBEETLE_CI_IMAGE" \
+            start --addresses=0.0.0.0:3000 --cache-grid=256MiB /data/0_0.tigerbeetle
+
+          ready=0
+          for i in {1..30}; do
+            if (echo > /dev/tcp/127.0.0.1/3000) >/dev/null 2>&1; then ready=1; break; fi
+            sleep 1
+          done
+          if [ "$ready" != 1 ]; then
+            docker logs musitu-resilience-tb
+            exit 1
+          fi
+
+          python - <<'PY' | tee -a /tmp/resilience-dr.txt
+          from app.audit import verify_audit_chain
+          from app.reconciliation import reconcile_monetary_truth
+          truth = reconcile_monetary_truth()
+          assert truth['applicable'] is True and truth['consistent'] is True, truth
+          valid, count, broken_at = verify_audit_chain()
+          assert valid, (count, broken_at)
+          print('PASS: TigerBeetle process recreation from persisted data retained monetary truth and audit reconciliation')
+          PY
+
+      - name: Final resilience evidence summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "commit=$GITHUB_SHA"
+            echo "utc=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            echo '=== services ==='
+            cat /tmp/resilience-services.txt 2>/dev/null || true
+            echo '=== load ==='
+            cat /tmp/resilience-load.json 2>/dev/null || true
+            echo '=== soak ==='
+            cat /tmp/resilience-soak.json 2>/dev/null || true
+            echo '=== TigerBeetle outage ==='
+            cat /tmp/resilience-tb-outage.txt 2>/dev/null || true
+            echo '=== PostgreSQL outage ==='
+            cat /tmp/resilience-pg-outage.txt 2>/dev/null || true
+            echo '=== disaster recovery ==='
+            cat /tmp/resilience-dr.txt 2>/dev/null || true
+            echo '=== backup digest ==='
+            cat /tmp/resilience-postgres-dump.sha256 2>/dev/null || true
+          } | tee /tmp/resilience-evidence-summary.txt
+
+      - name: Upload resilience evidence
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: musitu-production-resilience-evidence
+          path: |
+            /tmp/resilience-services.txt
+            /tmp/resilience-startup.txt
+            /tmp/resilience-load.log
+            /tmp/resilience-load.json
+            /tmp/resilience-soak.log
+            /tmp/resilience-soak.json
+            /tmp/resilience-tb-outage.txt
+            /tmp/resilience-pg-outage.txt
+            /tmp/resilience-dr.txt
+            /tmp/resilience-postgres-dump.sha256
+            /tmp/resilience-evidence-summary.txt
