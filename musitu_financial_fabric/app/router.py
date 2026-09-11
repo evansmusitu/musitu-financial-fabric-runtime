@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .config import settings
+
 
 @dataclass(frozen=True)
 class RouteScore:
@@ -28,7 +30,11 @@ def score_route(rail: str) -> RouteScore:
 
 
 def choose_route(allowed_rails: list[str]) -> RouteScore:
-    candidates = [score_route(r) for r in allowed_rails if r in DEFAULT_ROUTES]
+    eligible = [r for r in allowed_rails if r in DEFAULT_ROUTES]
+    if settings.is_production:
+        enabled = set(settings.production_enabled_rails)
+        eligible = [r for r in eligible if r in enabled]
+    candidates = [score_route(r) for r in eligible]
     if not candidates:
         raise ValueError("no eligible rails")
     return max(candidates, key=lambda x: x.score)
