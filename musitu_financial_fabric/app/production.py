@@ -23,7 +23,8 @@ class ProductionCheck:
     message: str
 
 
-_REQUIRED_EVIDENCE = ("regulator", "sponsor_bank", "data_protection", "independent_security")
+_REQUIRED_EVIDENCE = ("regulator", "sponsor_bank", "data_protection", "independent_security", "rail_provider")
+_PRODUCTION_IMPLEMENTED_RAILS = {"ecocash"}
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -110,6 +111,17 @@ def _evidence_checks(cfg: Settings) -> list[ProductionCheck]:
 
 
 def production_checks(cfg: Settings = settings) -> list[ProductionCheck]:
+    enabled_rails = set(cfg.production_enabled_rails)
+    rails_ok = bool(enabled_rails) and enabled_rails.issubset(_PRODUCTION_IMPLEMENTED_RAILS)
+    ecocash_enabled = "ecocash" in enabled_rails
+    ecocash_configured = all([
+        cfg.ecocash_api_base,
+        cfg.ecocash_oauth_path,
+        cfg.ecocash_payment_path,
+        cfg.ecocash_client_id,
+        cfg.ecocash_client_secret,
+    ])
+
     checks = [
         ProductionCheck("environment", cfg.environment == "production", "software", "runtime environment is production"),
         ProductionCheck(
@@ -122,6 +134,24 @@ def production_checks(cfg: Settings = settings) -> list[ProductionCheck]:
         ProductionCheck("metadata_postgres", cfg.uses_postgres, "software", "production metadata store is PostgreSQL"),
         ProductionCheck("ledger_tigerbeetle", cfg.ledger_backend == "tigerbeetle", "software", "monetary truth backend is TigerBeetle"),
         ProductionCheck("tigerbeetle_addresses", bool(cfg.tigerbeetle_addresses), "software", "TigerBeetle replica addresses are configured"),
+        ProductionCheck(
+            "production_rails",
+            rails_ok,
+            "software",
+            "only explicitly enabled, implemented production rails may initiate funds movement",
+        ),
+        ProductionCheck(
+            "ecocash_contract",
+            (not ecocash_enabled) or (cfg.ecocash_contract_confirmed and bool(cfg.ecocash_contract_version)),
+            "external",
+            "EcoCash production contract is explicitly confirmed when the rail is enabled",
+        ),
+        ProductionCheck(
+            "ecocash_connector",
+            (not ecocash_enabled) or ecocash_configured,
+            "software",
+            "EcoCash production credentials and exact endpoint configuration are present when the rail is enabled",
+        ),
         ProductionCheck(
             "api_auth",
             all([cfg.auth_introspection_url, cfg.auth_client_id, cfg.auth_client_secret]),

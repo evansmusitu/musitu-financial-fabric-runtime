@@ -15,6 +15,7 @@ def _base_production(**overrides):
         environment="production",
         live_funds_enabled=True,
         production_mode="pilot",
+        production_enabled_rails=("ecocash",),
         metadata_db_url="postgresql://musitu:test@127.0.0.1/musitu",
         ledger_backend="tigerbeetle",
         tigerbeetle_addresses="127.0.0.1:3000",
@@ -24,6 +25,13 @@ def _base_production(**overrides):
         authz_gate_url="https://authz.invalid/decision",
         risk_gate_url="https://risk.invalid/decision",
         webhook_secret="x" * 64,
+        ecocash_contract_confirmed=True,
+        ecocash_contract_version="test-contract-v1",
+        ecocash_api_base="https://ecocash.invalid",
+        ecocash_oauth_path="/oauth/token",
+        ecocash_payment_path="/payments",
+        ecocash_client_id="test-client",
+        ecocash_client_secret="test-secret",
     )
     values.update(overrides)
     return Settings(**values)
@@ -37,6 +45,7 @@ def _approved_manifest(tmp_path, *, funds_scope: str = "pilot") -> tuple[str, st
             "sponsor_bank": {"status": "approved", "evidence_ref": "BANK-REF"},
             "data_protection": {"status": "approved", "evidence_ref": "DPA-REF"},
             "independent_security": {"status": "approved", "evidence_ref": "PENTEST-REF"},
+            "rail_provider": {"status": "approved", "evidence_ref": "RAIL-CONTRACT-REF"},
         },
     }
     path = tmp_path / f"authorization-{funds_scope}.json"
@@ -102,6 +111,30 @@ def test_production_authorization_can_open_live_runtime(tmp_path):
     )
     assert production_readiness(cfg)["ready_for_live_funds"] is True
     assert_live_funds_allowed(cfg)
+
+
+def test_live_funds_require_an_implemented_enabled_rail(tmp_path):
+    path, digest = _approved_manifest(tmp_path)
+    cfg = _base_production(
+        production_enabled_rails=("bank",),
+        authorization_manifest_path=path,
+        authorization_manifest_sha256=digest,
+    )
+    result = production_readiness(cfg)
+    assert result["ready_for_live_funds"] is False
+    assert any(row["key"] == "production_rails" and not row["ok"] for row in result["checks"])
+
+
+def test_live_funds_require_complete_ecocash_connector(tmp_path):
+    path, digest = _approved_manifest(tmp_path)
+    cfg = _base_production(
+        ecocash_client_secret="",
+        authorization_manifest_path=path,
+        authorization_manifest_sha256=digest,
+    )
+    result = production_readiness(cfg)
+    assert result["ready_for_live_funds"] is False
+    assert any(row["key"] == "ecocash_connector" and not row["ok"] for row in result["checks"])
 
 
 def test_manifest_tampering_fails_closed(tmp_path):

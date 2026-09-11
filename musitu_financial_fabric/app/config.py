@@ -15,6 +15,11 @@ def _str(name: str, default: str = "") -> str:
     return os.getenv(name, default).strip()
 
 
+def _csv(name: str, default: str = "") -> tuple[str, ...]:
+    raw = _str(name, default)
+    return tuple(dict.fromkeys(part.strip().lower() for part in raw.split(",") if part.strip()))
+
+
 @dataclass(frozen=True)
 class Settings:
     db_path: str = field(default_factory=lambda: _str("MUSITU_DB_PATH", "./musitu_network.db"))
@@ -22,6 +27,7 @@ class Settings:
     environment: str = field(default_factory=lambda: _str("MUSITU_ENV", "sandbox").lower())
     live_funds_enabled: bool = field(default_factory=lambda: _bool("MUSITU_LIVE_FUNDS_ENABLED", False))
     production_mode: str = field(default_factory=lambda: _str("MUSITU_PRODUCTION_MODE", "shadow").lower())
+    production_enabled_rails: tuple[str, ...] = field(default_factory=lambda: _csv("MUSITU_PRODUCTION_ENABLED_RAILS"))
 
     authorization_manifest_path: str = field(default_factory=lambda: _str("MUSITU_AUTHORIZATION_MANIFEST_PATH"))
     authorization_manifest_sha256: str = field(default_factory=lambda: _str("MUSITU_AUTHORIZATION_MANIFEST_SHA256").lower())

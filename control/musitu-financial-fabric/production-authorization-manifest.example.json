@@ -20,7 +20,11 @@
     "independent_security": {
       "status": "missing",
       "evidence_ref": ""
+    },
+    "rail_provider": {
+      "status": "missing",
+      "evidence_ref": ""
     }
   },
-  "instructions": "The deployed authorization manifest must live outside the source repository. Pin its exact SHA-256 in MUSITU_AUTHORIZATION_MANIFEST_SHA256. Production code validates the digest and required evidence before allowing live funds."
+  "instructions": "The deployed authorization manifest must live outside the source repository. Pin its exact SHA-256 in MUSITU_AUTHORIZATION_MANIFEST_SHA256. Production code validates the digest, funds scope, and every required external approval before allowing live funds. Enabled production rails must also be explicitly configured and implemented."
 }
