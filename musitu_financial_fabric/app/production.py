@@ -55,6 +55,17 @@ def _secure_external_url(value: str) -> bool:
     return bool(parsed is not None and parsed.scheme.lower() == "https")
 
 
+def _relative_provider_path(value: str) -> bool:
+    value = str(value or "").strip()
+    if not value:
+        return False
+    try:
+        parsed = urlparse(value)
+    except Exception:
+        return False
+    return bool(not parsed.scheme and not parsed.netloc and parsed.path and not value.startswith("//"))
+
+
 def _postgres_transport_secure(value: str) -> bool:
     try:
         parsed = urlparse(value)
@@ -216,6 +227,10 @@ def production_checks(cfg: Settings = settings) -> list[ProductionCheck]:
         cfg.ecocash_client_id,
         cfg.ecocash_client_secret,
     ])
+    ecocash_paths_ok = (not ecocash_enabled) or (
+        _relative_provider_path(cfg.ecocash_oauth_path)
+        and _relative_provider_path(cfg.ecocash_payment_path)
+    )
     metadata_transport_ok = _postgres_transport_secure(cfg.metadata_db_url)
     introspection_transport_ok = _secure_or_loopback_service_url(cfg.auth_introspection_url)
     authz_transport_ok = _secure_or_loopback_service_url(cfg.authz_gate_url)
@@ -233,6 +248,12 @@ def production_checks(cfg: Settings = settings) -> list[ProductionCheck]:
             "live funds require pilot or live mode; shadow mode is observation-only",
         ),
         ProductionCheck("live_funds_flag", cfg.live_funds_enabled, "software", "live funds flag is explicitly enabled"),
+        ProductionCheck(
+            "request_body_limit",
+            cfg.max_request_body_bytes > 0,
+            "software",
+            "production request-body limit is explicitly positive",
+        ),
         ProductionCheck("metadata_postgres", cfg.uses_postgres, "software", "production metadata store is PostgreSQL"),
         ProductionCheck("metadata_transport", metadata_transport_ok, "software", "remote PostgreSQL requires explicit TLS; loopback is allowed for local deployment/testing"),
         ProductionCheck("ledger_tigerbeetle", cfg.ledger_backend == "tigerbeetle", "software", "monetary truth backend is TigerBeetle"),
@@ -285,12 +306,24 @@ def production_checks(cfg: Settings = settings) -> list[ProductionCheck]:
             "software",
             "EcoCash production credentials, endpoints, and MUSITU provider callback are present when the rail is enabled",
         ),
+        ProductionCheck(
+            "ecocash_endpoint_paths",
+            ecocash_paths_ok,
+            "software",
+            "EcoCash OAuth and payment endpoints remain relative to the pinned provider host",
+        ),
         ProductionCheck("ecocash_transport", ecocash_transport_ok, "software", "EcoCash production API and MUSITU provider callback use HTTPS"),
         ProductionCheck(
             "api_auth",
             all([cfg.auth_introspection_url, cfg.auth_client_id, cfg.auth_client_secret]),
             "software",
             "production bearer-token introspection is configured",
+        ),
+        ProductionCheck(
+            "auth_required_scope",
+            bool(cfg.auth_required_scope.strip()),
+            "software",
+            "production bearer tokens must satisfy a nonempty required scope",
         ),
         ProductionCheck("auth_introspection_transport", introspection_transport_ok, "software", "identity introspection uses HTTPS or a loopback sidecar"),
         ProductionCheck("authz_gate", bool(cfg.authz_gate_url), "software", "OpenFGA/OPA authorization decision gate is configured"),
@@ -331,6 +364,8 @@ def enforce_safe_startup(cfg: Settings = settings) -> None:
     if cfg.is_production:
         if cfg.production_mode not in {"shadow", "pilot", "live"}:
             raise ProductionGateError("production startup requires MUSITU_PRODUCTION_MODE=shadow, pilot, or live")
+        if cfg.max_request_body_bytes <= 0:
+            raise ProductionGateError("production startup requires a positive request body limit")
         if not cfg.uses_postgres:
             raise ProductionGateError("production startup requires MUSITU_METADATA_DB_URL pointing to PostgreSQL")
         if not _postgres_transport_secure(cfg.metadata_db_url):
@@ -347,6 +382,8 @@ def enforce_safe_startup(cfg: Settings = settings) -> None:
             raise ProductionGateError("production startup requires a nonzero TigerBeetle transfer code within u16 range")
         if not all([cfg.auth_introspection_url, cfg.auth_client_id, cfg.auth_client_secret]):
             raise ProductionGateError("production startup requires bearer-token introspection configuration")
+        if not cfg.auth_required_scope.strip():
+            raise ProductionGateError("production startup requires a nonempty bearer-token scope")
         if not _secure_or_loopback_service_url(cfg.auth_introspection_url):
             raise ProductionGateError("production identity introspection requires HTTPS or a loopback sidecar")
         if not cfg.authz_gate_url:
@@ -362,6 +399,10 @@ def enforce_safe_startup(cfg: Settings = settings) -> None:
                 raise ProductionGateError("production EcoCash API requires HTTPS")
             if cfg.ecocash_callback_url and not _secure_external_url(cfg.ecocash_callback_url):
                 raise ProductionGateError("production EcoCash callback requires HTTPS")
+            if cfg.ecocash_oauth_path and not _relative_provider_path(cfg.ecocash_oauth_path):
+                raise ProductionGateError("production EcoCash OAuth endpoint must be a relative path on the pinned provider host")
+            if cfg.ecocash_payment_path and not _relative_provider_path(cfg.ecocash_payment_path):
+                raise ProductionGateError("production EcoCash payment endpoint must be a relative path on the pinned provider host")
         if len(cfg.webhook_secret) < 32 or cfg.webhook_secret == "sandbox-secret-change-me":
             raise ProductionGateError("production startup requires a strong non-default webhook secret")
         if cfg.live_funds_enabled:
