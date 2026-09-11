@@ -70,7 +70,65 @@ jobs:
           test "$(git -C /tmp/tazama-stack rev-parse HEAD)" = "$TAZAMA_UPSTREAM_SHA"
       - name: Record Tazama revision
         run: git -C /tmp/tazama-stack rev-parse HEAD | tee /tmp/tazama.sha
-      - name: Start public DockerHub core plus auth and relay
+      - name: Pin every selected Tazama runtime image to successful-run digests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          root = Path('/tmp/tazama-stack/core')
+          replacements = {
+              'nats:2': 'nats:2@sha256:c50b0a773c6c8d033cad54f7c53cb97fd6e09b3bfc1accda7cd4fa94e19e9ed9',
+              'postgres:18': 'postgres:18@sha256:4ef4dbc939d61acea57712655ddb4b4ab27419c913f94cca0cd57cb3ea3c2280',
+              'quay.io/keycloak/keycloak:23.0.6': 'quay.io/keycloak/keycloak:23.0.6@sha256:14e21c6f73e61adb75d268e85028485b3f92beae7c1278213ba12868f3e54599',
+              'valkey/valkey:7.2.5': 'valkey/valkey:7.2.5@sha256:57361de39073ea1ef5e7bcfd8068871b21c0a197f01d460e15511f27070fc49b',
+              'tazamaorg/admin-service:${TAZAMA_VERSION}': 'tazamaorg/admin-service:rc@sha256:7b88b6ffaea4476f9c1d5872f36b04a317c8a2f63de1c9cf1891dce983dc2947',
+              'tazamaorg/auth-service:${TAZAMA_VERSION}': 'tazamaorg/auth-service:rc@sha256:6a0a4b2128a3eefdbbe2695e7145400f94039da750fed6141a1ba985afcdf36c',
+              'tazamaorg/batch-ppa:${TAZAMA_VERSION}': 'tazamaorg/batch-ppa:rc@sha256:522baf7b8757686727db09c4d7846d65b22149b118a4a97f25aa3183354ceab8',
+              'tazamaorg/event-adjudicator:${TAZAMA_VERSION}': 'tazamaorg/event-adjudicator:rc@sha256:5c836dd53993c631fb7463207309c5ed3d337cbeecce8e94d61abaccb94a38ea',
+              'tazamaorg/event-director:${TAZAMA_VERSION}': 'tazamaorg/event-director:rc@sha256:641afdaefe22311c666ce8f00aae08ac1850568ccae2dafcd9dbcbf6351b8484',
+              'tazamaorg/event-flow:${TAZAMA_VERSION}': 'tazamaorg/event-flow:rc@sha256:c98d7351c352e58e70bc5aefa494a44627d20a8a62672735b843148148b1faf5',
+              'tazamaorg/nats-utilities:${TAZAMA_VERSION}': 'tazamaorg/nats-utilities:rc@sha256:6c0ef05c5a3845751d362d1562069f50fed871736f85aa20c65339f0531955d1',
+              'tazamaorg/relay-service-integration-nats:${TAZAMA_VERSION}': 'tazamaorg/relay-service-integration-nats:rc@sha256:9fe4bb64bb3844b46453fe69c8a6555cdaf4d96b10b3e22b64b7c6a18b76f783',
+              'tazamaorg/rule-901:${TAZAMA_VERSION}': 'tazamaorg/rule-901:rc@sha256:bf3bc9d4f2498f70722b1f5ba3b3847df22b37c17f998ddb6058cca7b2c999ce',
+              'tazamaorg/rule-902:${TAZAMA_VERSION}': 'tazamaorg/rule-902:rc@sha256:3d69de1bc383f2a050ca952d25f5bc9673d62f2f4713ee468cc6d9375440f3d7',
+              'tazamaorg/tazama-demo:${TAZAMA_VERSION}': 'tazamaorg/tazama-demo:rc@sha256:570edca472970ec2aa6be85a3fc904cb58202fb78406918d96f1926224ff8045',
+              'tazamaorg/tms-service:${TAZAMA_VERSION}': 'tazamaorg/tms-service:rc@sha256:cdf639b1908c5c5d1fd94273ef2b10b6ca5b2a86dd665871a20e51bb6e2e4fb5',
+              'tazamaorg/typology-processor:${TAZAMA_VERSION}': 'tazamaorg/typology-processor:rc@sha256:fb16e7fe6ce7b0fd87ef752eee1f8a40cd88b88390b63c97bfaca6f83eacfdd6',
+          }
+          files = sorted(root.rglob('*.yaml')) + sorted(root.rglob('*.yml'))
+          for old, new in replacements.items():
+              hits = 0
+              for path in files:
+                  text = path.read_text(encoding='utf-8')
+                  count = text.count(old)
+                  if count:
+                      path.write_text(text.replace(old, new), encoding='utf-8')
+                      hits += count
+              if hits < 1:
+                  raise SystemExit(f'Tazama image signature missing; refusing unverified pin: {old}')
+              print(f'pinned {old} replacements={hits}')
+          PY
+
+          cd /tmp/tazama-stack/core
+          docker compose \
+            -f docker-compose.base.infrastructure.yaml \
+            -f docker-compose.base.override.yaml \
+            -f docker-compose.hub.cfg.yaml \
+            -f docker-compose.hub.core.yaml \
+            -f docker-compose.hub.rules.yaml \
+            -f docker-compose.base.auth.yaml \
+            -f docker-compose.hub.relay.yaml \
+            -f docker-compose.utils.nats-utils.yaml \
+            config --images | sort -u | tee /tmp/tazama-config-images.txt
+          test -s /tmp/tazama-config-images.txt
+          if grep -v '@sha256:' /tmp/tazama-config-images.txt; then
+            echo 'FAIL: selected Tazama compose graph still contains an unpinned image' >&2
+            exit 1
+          fi
+          test "$(wc -l < /tmp/tazama-config-images.txt | tr -d ' ')" -eq 17
+      - name: Start fully digest-pinned public core plus auth and relay
         working-directory: /tmp/tazama-stack/core
         run: |
           docker compose \
@@ -97,6 +155,8 @@ jobs:
         run: |
           echo '=== Tazama upstream revision ==='
           cat /tmp/tazama.sha || true
+          echo '=== Tazama resolved compose images ==='
+          cat /tmp/tazama-config-images.txt || true
           echo '=== Tazama health ==='
           cat /tmp/tazama-health.json || true
           echo '=== Tazama containers ==='
@@ -113,6 +173,7 @@ jobs:
           name: musitu-tazama-evidence
           path: |
             /tmp/tazama.sha
+            /tmp/tazama-config-images.txt
             /tmp/tazama-health.json
             /tmp/tazama-containers.txt
             /tmp/tazama-image-digests.txt
@@ -131,6 +192,23 @@ jobs:
           test "$(git -C /tmp/killbill-cloud rev-parse HEAD)" = "$KILLBILL_CLOUD_UPSTREAM_SHA"
       - name: Record Kill Bill deployment revision
         run: git -C /tmp/killbill-cloud rev-parse HEAD | tee /tmp/killbill-cloud.sha
+      - name: Verify fully digest-pinned Kill Bill compose graph
+        working-directory: /tmp/killbill-cloud
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker compose \
+            -f docker/compose/docker-compose.kb.yml \
+            -f "$GITHUB_WORKSPACE/control/musitu-financial-fabric/killbill-compose.override.yml" \
+            config --images | sort -u | tee /tmp/killbill-config-images.txt
+          test "$(wc -l < /tmp/killbill-config-images.txt | tr -d ' ')" -eq 3
+          if grep -v '@sha256:' /tmp/killbill-config-images.txt; then
+            echo 'FAIL: Kill Bill compose graph still contains an unpinned image' >&2
+            exit 1
+          fi
+          grep -F 'killbill/killbill:0.24.21@sha256:e6b6ab4a0e6287ebf57aafa2d5f22cfa6250dfa056682c74d7c208b4a39d0c9b' /tmp/killbill-config-images.txt
+          grep -F 'killbill/mariadb:0.24@sha256:921e17f2ce804746d8fb2546249760b242e21d6f3398c6326a8a0901742b536a' /tmp/killbill-config-images.txt
+          grep -F 'killbill/kaui:latest@sha256:0c903329986841284c36468a718eb42db6fae0bd587d84817cc739b12200e57a' /tmp/killbill-config-images.txt
       - name: Start official Kill Bill stack
         working-directory: /tmp/killbill-cloud
         run: docker compose -f docker/compose/docker-compose.kb.yml -f $GITHUB_WORKSPACE/control/musitu-financial-fabric/killbill-compose.override.yml up -d
@@ -159,6 +237,7 @@ jobs:
       - name: Capture containers and image identities
         if: always()
         run: |
+          cat /tmp/killbill-config-images.txt || true
           docker ps -a | tee /tmp/killbill-containers.txt
           docker ps -a --format '{{.Image}}' | sort -u | while read -r image; do
             [ -n "$image" ] || continue
@@ -172,6 +251,7 @@ jobs:
           name: musitu-killbill-evidence
           path: |
             /tmp/killbill-cloud.sha
+            /tmp/killbill-config-images.txt
             /tmp/killbill-nodes.json
             /tmp/killbill-containers.txt
             /tmp/killbill-image-digests.txt

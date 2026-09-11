@@ -1,4 +1,9 @@
-# Official preinstalled Kill Bill release used to avoid the failing latest-image runtime KPM bootstrap path.
+# Exact successful-run container identities for the pinned Kill Bill cloud deployment.
+# These overrides preserve the upstream topology while preventing tag drift.
 services:
+  db:
+    image: killbill/mariadb:0.24@sha256:921e17f2ce804746d8fb2546249760b242e21d6f3398c6326a8a0901742b536a
   killbill:
-    image: killbill/killbill:0.24.21
+    image: killbill/killbill:0.24.21@sha256:e6b6ab4a0e6287ebf57aafa2d5f22cfa6250dfa056682c74d7c208b4a39d0c9b
+  kaui:
+    image: killbill/kaui:latest@sha256:0c903329986841284c36468a718eb42db6fae0bd587d84817cc739b12200e57a
