@@ -1,0 +1,79 @@
+name: One-shot Gazelle immutable pin
+
+on:
+  push:
+    branches: [musitu-financial-fabric-production-readiness]
+    paths:
+      - '.github/workflows/one-shot-gazelle-pin.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch-gazelle:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: musitu-financial-fabric-production-readiness
+      - name: Patch Gazelle workflow with proven immutable provenance
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('.github/workflows/musitu-financial-fabric-gazelle.yml')
+          text = path.read_text(encoding='utf-8')
+
+          replacements = [
+              (
+                  'branches: [musitu-financial-fabric]',
+                  'branches: [musitu-financial-fabric, musitu-financial-fabric-production-readiness]',
+              ),
+              (
+                  '- uses: actions/checkout@v4',
+                  '- uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4',
+              ),
+              (
+                  "      - name: Acquire Mifos Gazelle v2 deployment source\n"
+                  "        run: git clone --depth 1 --branch main https://github.com/openMF/mifos-gazelle.git /tmp/mifos-gazelle\n\n"
+                  "      - name: Record exact upstream revision\n"
+                  "        run: git -C /tmp/mifos-gazelle rev-parse HEAD | tee /tmp/gazelle.sha",
+                  "      - name: Acquire pinned Mifos Gazelle v2 deployment source\n"
+                  "        shell: bash\n"
+                  "        run: |\n"
+                  "          set -euo pipefail\n"
+                  "          git clone https://github.com/openMF/mifos-gazelle.git /tmp/mifos-gazelle\n"
+                  "          git -C /tmp/mifos-gazelle checkout --detach 2b823e2948d7da9362fd8bc41adefaf46e4c2907\n\n"
+                  "      - name: Verify exact upstream revision\n"
+                  "        shell: bash\n"
+                  "        run: |\n"
+                  "          set -euo pipefail\n"
+                  "          expected=2b823e2948d7da9362fd8bc41adefaf46e4c2907\n"
+                  "          actual=\"$(git -C /tmp/mifos-gazelle rev-parse HEAD)\"\n"
+                  "          test \"$actual\" = \"$expected\"\n"
+                  "          printf '%s\\n' \"$actual\" | tee /tmp/gazelle.sha",
+              ),
+          ]
+
+          for old, new in replacements:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'Expected exactly one match, found {count}: {old[:80]!r}')
+              text = text.replace(old, new, 1)
+
+          path.write_text(text, encoding='utf-8')
+          PY
+
+          git diff --check
+          git diff -- .github/workflows/musitu-financial-fabric-gazelle.yml
+      - name: Commit pinned Gazelle workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .github/workflows/musitu-financial-fabric-gazelle.yml
+          git diff --cached --quiet && { echo 'No Gazelle changes to commit'; exit 1; }
+          git commit -m 'Pin Gazelle upstream provenance for readiness'
+          git push origin HEAD:musitu-financial-fabric-production-readiness
