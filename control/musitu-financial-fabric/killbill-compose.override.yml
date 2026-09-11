@@ -1,0 +1,3 @@
+services:
+  killbill:
+    image: killbill/killbill:0.24.21
