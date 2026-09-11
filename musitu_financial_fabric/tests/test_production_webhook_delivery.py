@@ -107,6 +107,21 @@ def test_same_event_id_with_different_payload_fails_closed(tmp_path, monkeypatch
         webhook.begin_webhook_delivery("ecocash", conflicting)
 
 
+def test_terminal_event_cannot_reuse_nonterminal_receipt_id_with_new_payload(tmp_path, monkeypatch):
+    db, webhook, service = _reload_stack(tmp_path, monkeypatch)
+    _seed_payment(db)
+    prior = _body(status="pending")
+    terminal = _body(status="succeeded")
+
+    assert service.register_webhook_event("ecocash", "evt_retry", prior) is True
+    with pytest.raises(webhook.WebhookReplayConflict, match="existing receipt payload"):
+        webhook.begin_webhook_delivery("ecocash", terminal)
+
+    with db.connect() as conn:
+        row = conn.execute("SELECT COUNT(*) AS n FROM webhook_delivery_state WHERE event_id=?", ("evt_retry",)).fetchone()
+    assert int(row["n"]) == 0
+
+
 def test_delivery_state_records_payload_hash(tmp_path, monkeypatch):
     db, webhook, _ = _reload_stack(tmp_path, monkeypatch)
     _seed_payment(db)
