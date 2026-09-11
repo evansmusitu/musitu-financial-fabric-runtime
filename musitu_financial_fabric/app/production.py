@@ -244,6 +244,18 @@ def production_checks(cfg: Settings = settings) -> list[ProductionCheck]:
             "production TigerBeetle cluster ID is a nonzero u128 and does not use the reserved test cluster",
         ),
         ProductionCheck(
+            "tigerbeetle_account_code",
+            0 < cfg.tigerbeetle_account_code <= 0xFFFF,
+            "software",
+            "TigerBeetle account code is a nonzero u16",
+        ),
+        ProductionCheck(
+            "tigerbeetle_transfer_code",
+            0 < cfg.tigerbeetle_transfer_code <= 0xFFFF,
+            "software",
+            "TigerBeetle transfer code is a nonzero u16",
+        ),
+        ProductionCheck(
             "production_rails",
             rails_ok,
             "software",
@@ -329,6 +341,10 @@ def enforce_safe_startup(cfg: Settings = settings) -> None:
             raise ProductionGateError("production startup requires TigerBeetle replica addresses")
         if not (0 < cfg.tigerbeetle_cluster_id < (1 << 128)):
             raise ProductionGateError("production startup requires a nonzero TigerBeetle cluster ID; cluster 0 is reserved for testing and benchmarking")
+        if not (0 < cfg.tigerbeetle_account_code <= 0xFFFF):
+            raise ProductionGateError("production startup requires a nonzero TigerBeetle account code within u16 range")
+        if not (0 < cfg.tigerbeetle_transfer_code <= 0xFFFF):
+            raise ProductionGateError("production startup requires a nonzero TigerBeetle transfer code within u16 range")
         if not all([cfg.auth_introspection_url, cfg.auth_client_id, cfg.auth_client_secret]):
             raise ProductionGateError("production startup requires bearer-token introspection configuration")
         if not _secure_or_loopback_service_url(cfg.auth_introspection_url):
