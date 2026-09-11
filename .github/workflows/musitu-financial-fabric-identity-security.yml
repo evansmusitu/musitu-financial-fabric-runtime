@@ -2,7 +2,7 @@ name: MUSITU Financial Fabric — Identity Security
 
 on:
   push:
-    branches: [musitu-financial-fabric]
+    branches: [musitu-financial-fabric, musitu-financial-fabric-production-readiness]
     paths:
       - 'control/musitu-financial-fabric/**'
       - '.github/workflows/musitu-financial-fabric-*.yml'
@@ -11,17 +11,24 @@ on:
 permissions:
   contents: read
 
+env:
+  MUSITU_KEYCLOAK_CI_IMAGE: quay.io/keycloak/keycloak:26.5.4
+  MUSITU_OPENFGA_CI_IMAGE: openfga/openfga:v1.18.1@sha256:efde89d24487da1a8bc37d85b61341f1fb7024943a1ded65f4b7d51a75666688
+  MUSITU_OPENBAO_CI_IMAGE: openbao/openbao:2.6.1@sha256:15e90b578c970ae57b596ed51295380cd54f93860fe36758f05b455d71aae0e0
+  MUSITU_OPENSEARCH_CI_IMAGE: opensearchproject/opensearch:3.8.0@sha256:39a8f8c63028e8b5d6b70539af1d0339b15a6729002dd5b3f4a65f520376fd30
+  MUSITU_OTEL_CI_IMAGE: otel/opentelemetry-collector-contrib:0.157.0@sha256:f2f01157055a9b2aab9df7118e1f1c9abf345e99b23bc7a2bc791db374a7d0f6
+
 jobs:
   keycloak:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Start Keycloak
         run: |
           docker run -d --name musitu-keycloak -p 8080:8080 \
             -e KC_BOOTSTRAP_ADMIN_USERNAME=admin \
             -e KC_BOOTSTRAP_ADMIN_PASSWORD=musitu-ci \
-            quay.io/keycloak/keycloak:latest start-dev
+            "$MUSITU_KEYCLOAK_CI_IMAGE" start-dev
       - name: Verify Keycloak master realm
         run: |
           for i in {1..90}; do curl -fsS http://127.0.0.1:8080/realms/master >/tmp/keycloak.json && break || sleep 2; done
@@ -30,13 +37,20 @@ jobs:
           p=json.load(open('/tmp/keycloak.json'))
           assert p['realm'] == 'master'
           PY
+      - name: Record resolved Keycloak image identity
+        run: |
+          configured="$(docker inspect musitu-keycloak --format '{{.Config.Image}}')"
+          test "$configured" = "$MUSITU_KEYCLOAK_CI_IMAGE"
+          image_id="$(docker inspect musitu-keycloak --format '{{.Image}}')"
+          docker image inspect "$image_id" --format '{{json .RepoDigests}}' | tee /tmp/musitu-keycloak-repodigests.txt
+          grep -F 'quay.io/keycloak/keycloak@sha256:' /tmp/musitu-keycloak-repodigests.txt
 
   openfga:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Start OpenFGA
-        run: docker run -d --name musitu-openfga -p 8080:8080 openfga/openfga:latest run
+        run: docker run -d --name musitu-openfga -p 8080:8080 "$MUSITU_OPENFGA_CI_IMAGE" run
       - name: Create and verify authorization store
         run: |
           for i in {1..60}; do curl -fsS http://127.0.0.1:8080/stores >/dev/null && break || sleep 1; done
@@ -46,16 +60,22 @@ jobs:
           p=json.load(open('/tmp/openfga-store.json'))
           assert p.get('id') and p.get('name') == 'musitu-ci'
           PY
+      - name: Verify resolved OpenFGA image identity
+        run: |
+          configured="$(docker inspect musitu-openfga --format '{{.Config.Image}}')"
+          test "$configured" = "$MUSITU_OPENFGA_CI_IMAGE"
+          docker image inspect "$MUSITU_OPENFGA_CI_IMAGE" --format '{{json .RepoDigests}}' | tee /tmp/musitu-openfga-repodigests.txt
+          grep -F 'sha256:efde89d24487da1a8bc37d85b61341f1fb7024943a1ded65f4b7d51a75666688' /tmp/musitu-openfga-repodigests.txt
 
   openbao:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Start OpenBao dev server
         run: |
           docker run -d --name musitu-openbao -p 8200:8200 \
             -e BAO_DEV_ROOT_TOKEN_ID=musitu-ci \
-            openbao/openbao:latest server -dev -dev-listen-address=0.0.0.0:8200
+            "$MUSITU_OPENBAO_CI_IMAGE" server -dev -dev-listen-address=0.0.0.0:8200
       - name: Verify OpenBao health
         run: |
           for i in {1..60}; do curl -fsS http://127.0.0.1:8200/v1/sys/health >/tmp/openbao.json && break || sleep 1; done
@@ -64,18 +84,24 @@ jobs:
           p=json.load(open('/tmp/openbao.json'))
           assert p.get('initialized') is True and p.get('sealed') is False
           PY
+      - name: Verify resolved OpenBao image identity
+        run: |
+          configured="$(docker inspect musitu-openbao --format '{{.Config.Image}}')"
+          test "$configured" = "$MUSITU_OPENBAO_CI_IMAGE"
+          docker image inspect "$MUSITU_OPENBAO_CI_IMAGE" --format '{{json .RepoDigests}}' | tee /tmp/musitu-openbao-repodigests.txt
+          grep -F 'sha256:15e90b578c970ae57b596ed51295380cd54f93860fe36758f05b455d71aae0e0' /tmp/musitu-openbao-repodigests.txt
 
   opensearch:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Start OpenSearch
         run: |
           docker run -d --name musitu-opensearch -p 9200:9200 \
             -e 'discovery.type=single-node' \
             -e 'DISABLE_SECURITY_PLUGIN=true' \
             -e 'OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m' \
-            opensearchproject/opensearch:latest
+            "$MUSITU_OPENSEARCH_CI_IMAGE"
       - name: Verify OpenSearch cluster
         run: |
           for i in {1..120}; do curl -fsS http://127.0.0.1:9200 >/tmp/opensearch.json && break || sleep 2; done
@@ -84,11 +110,17 @@ jobs:
           p=json.load(open('/tmp/opensearch.json'))
           assert 'cluster_name' in p and 'version' in p
           PY
+      - name: Verify resolved OpenSearch image identity
+        run: |
+          configured="$(docker inspect musitu-opensearch --format '{{.Config.Image}}')"
+          test "$configured" = "$MUSITU_OPENSEARCH_CI_IMAGE"
+          docker image inspect "$MUSITU_OPENSEARCH_CI_IMAGE" --format '{{json .RepoDigests}}' | tee /tmp/musitu-opensearch-repodigests.txt
+          grep -F 'sha256:39a8f8c63028e8b5d6b70539af1d0339b15a6729002dd5b3f4a65f520376fd30' /tmp/musitu-opensearch-repodigests.txt
 
   telemetry-edge:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Create OpenTelemetry configuration
         run: |
           cat > "$RUNNER_TEMP/otel.yaml" <<'EOF'
@@ -115,9 +147,15 @@ jobs:
         run: |
           docker run -d --name musitu-otel -p 4317:4317 -p 4318:4318 -p 13133:13133 \
             -v "$RUNNER_TEMP/otel.yaml:/etc/otelcol-contrib/config.yaml:ro" \
-            otel/opentelemetry-collector-contrib:latest
+            "$MUSITU_OTEL_CI_IMAGE"
       - name: Verify collector health
         run: |
           for i in {1..60}; do curl -fsS http://127.0.0.1:13133/ && exit 0 || sleep 1; done
           docker logs musitu-otel
           exit 1
+      - name: Verify resolved OpenTelemetry image identity
+        run: |
+          configured="$(docker inspect musitu-otel --format '{{.Config.Image}}')"
+          test "$configured" = "$MUSITU_OTEL_CI_IMAGE"
+          docker image inspect "$MUSITU_OTEL_CI_IMAGE" --format '{{json .RepoDigests}}' | tee /tmp/musitu-otel-repodigests.txt
+          grep -F 'sha256:f2f01157055a9b2aab9df7118e1f1c9abf345e99b23bc7a2bc791db374a7d0f6' /tmp/musitu-otel-repodigests.txt
