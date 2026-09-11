@@ -1,0 +1,4 @@
+MUSITU Financial Fabric resilience rerun marker
+UTC date: 2026-09-11
+Reason: re-execute the unchanged production resilience harness after a transient PostgreSQL initialization-server readiness transition on head 9c3a1d915cfce58574d58207faa3f55c87d90ec3.
+No software gate is weakened and no real-funds authorization is implied.
