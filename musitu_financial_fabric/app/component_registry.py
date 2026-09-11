@@ -74,7 +74,7 @@ def component_manifest() -> list[dict]:
 async def probe_components(components: Iterable[Component] = COMPONENTS) -> dict:
     ordered = tuple(components)
 
-    async with httpx.AsyncClient(timeout=2.5, follow_redirects=True) as client:
+    async with httpx.AsyncClient(timeout=2.5, follow_redirects=False) as client:
         async def probe(c: Component) -> dict:
             if c.kind in {"protocol", "tooling", "native"}:
                 return {"key": c.key, "name": c.name, "required": c.required, "state": "declared", "kind": c.kind}
