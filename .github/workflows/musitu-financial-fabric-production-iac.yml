@@ -1,0 +1,106 @@
+name: MUSITU Financial Fabric — Production IaC Guard
+
+on:
+  push:
+    branches: [musitu-financial-fabric-production-readiness]
+    paths:
+      - 'musitu_financial_fabric/infra/**'
+      - '.github/workflows/musitu-financial-fabric-production-iac.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  production-iac-guard:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: musitu_financial_fabric
+    steps:
+      - uses: actions/checkout@v4
+      - uses: opentofu/setup-opentofu@v1
+      - name: Validate production infrastructure guard
+        run: |
+          tofu -chdir=infra init -backend=false
+          tofu -chdir=infra validate
+      - name: Prove pinned launch perimeter is enforced
+        run: |
+          manifest="$RUNNER_TEMP/production-authorization-ci.json"
+          cat > "$manifest" <<'JSON'
+          {
+            "funds_scope": "pilot",
+            "launch_scope": {
+              "rails": ["ecocash"],
+              "currencies": ["USD"],
+              "max_single_payment_minor": 1000
+            },
+            "evidence": {
+              "regulator": {"status": "approved", "evidence_ref": "TEST-ONLY-REGULATOR"},
+              "sponsor_bank": {"status": "approved", "evidence_ref": "TEST-ONLY-SPONSOR"},
+              "data_protection": {"status": "approved", "evidence_ref": "TEST-ONLY-DATA"},
+              "independent_security": {"status": "approved", "evidence_ref": "TEST-ONLY-SECURITY"},
+              "rail_provider": {"status": "approved", "evidence_ref": "TEST-ONLY-RAIL"}
+            }
+          }
+          JSON
+          digest="$(sha256sum "$manifest" | awk '{print $1}')"
+
+          tofu -chdir=infra plan -input=false -lock=false -refresh=false \
+            -var='environment=production' \
+            -var='production_mode=pilot' \
+            -var='live_funds_enabled=true' \
+            -var="authorization_manifest_path=$manifest" \
+            -var="authorization_manifest_sha256=$digest" \
+            -var='production_enabled_rails=["ecocash"]' \
+            -var='production_enabled_currencies=["USD"]' \
+            -var='max_single_payment_minor=1000' \
+            -out="$RUNNER_TEMP/valid.tfplan"
+
+          if tofu -chdir=infra plan -input=false -lock=false -refresh=false \
+            -var='environment=production' \
+            -var='production_mode=pilot' \
+            -var='live_funds_enabled=true' \
+            -var="authorization_manifest_path=$manifest" \
+            -var="authorization_manifest_sha256=$digest" \
+            -var='production_enabled_rails=["ecocash"]' \
+            -var='production_enabled_currencies=["USD","EUR"]' \
+            -var='max_single_payment_minor=1000' \
+            > "$RUNNER_TEMP/overbroad-currency.log" 2>&1; then
+            echo 'FAIL: over-broad currency perimeter was accepted'
+            exit 1
+          fi
+          grep -q 'exact deployment perimeter' "$RUNNER_TEMP/overbroad-currency.log"
+
+          if tofu -chdir=infra plan -input=false -lock=false -refresh=false \
+            -var='environment=production' \
+            -var='production_mode=pilot' \
+            -var='live_funds_enabled=true' \
+            -var="authorization_manifest_path=$manifest" \
+            -var="authorization_manifest_sha256=$digest" \
+            -var='production_enabled_rails=["ecocash"]' \
+            -var='production_enabled_currencies=["USD"]' \
+            -var='max_single_payment_minor=1001' \
+            > "$RUNNER_TEMP/overbroad-limit.log" 2>&1; then
+            echo 'FAIL: over-broad payment ceiling was accepted'
+            exit 1
+          fi
+          grep -q 'exact deployment perimeter' "$RUNNER_TEMP/overbroad-limit.log"
+
+          if tofu -chdir=infra plan -input=false -lock=false -refresh=false \
+            -var='environment=production' \
+            -var='production_mode=pilot' \
+            -var='live_funds_enabled=true' \
+            -var="authorization_manifest_path=$manifest" \
+            -var='authorization_manifest_sha256=0000000000000000000000000000000000000000000000000000000000000000' \
+            -var='production_enabled_rails=["ecocash"]' \
+            -var='production_enabled_currencies=["USD"]' \
+            -var='max_single_payment_minor=1000' \
+            > "$RUNNER_TEMP/bad-pin.log" 2>&1; then
+            echo 'FAIL: mismatched authorization manifest pin was accepted'
+            exit 1
+          fi
+          grep -q 'byte-pinned external authorization manifest' "$RUNNER_TEMP/bad-pin.log"
+
+          echo 'PASS: IaC fail-closed perimeter rejects scope expansion and manifest tampering'
