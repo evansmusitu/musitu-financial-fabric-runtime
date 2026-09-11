@@ -1,5 +1,6 @@
 # syntax=docker/dockerfile:1
 # python:3.12.14-slim-bookworm, pinned by multi-platform index digest.
+# Dedicated CI packaging gate proves this artifact before dark deployment.
 FROM python:3.12.14-slim-bookworm@sha256:782412e85d0f0984994c290652577d4018aff08145c85b262bb63dc0c7522254
 
 ARG MUSITU_BUILD_COMMIT=unknown
