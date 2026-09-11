@@ -325,6 +325,150 @@ def _payment_idempotency_reserved(idempotency_key: str) -> bool:
     return bool(row and row["status"] == "reserved")
 
 
+def _release_payment_idempotency(idempotency_key: str, request_hash: str) -> None:
+    with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = conn.execute(
+                "SELECT status,request_hash FROM payment_idempotency WHERE idempotency_key=?",
+                (idempotency_key,),
+            ).fetchone()
+            if row and row["status"] == "reserved" and row["request_hash"] == request_hash:
+                conn.execute("DELETE FROM payment_idempotency WHERE idempotency_key=?", (idempotency_key,))
+                append_audit(
+                    "payment.idempotency_released",
+                    idempotency_key,
+                    {"request_hash": request_hash, "reason": "no_external_dispatch"},
+                    conn=conn,
+                )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+
+
+def _persist_production_dispatch(*, payment_id: str, merchant_id: str, destination_account_id: str, amount_minor: int, currency: str, selected, requested_rail: str, payer_ref: str | None, description: str | None, idempotency_key: str, request_hash: str, risk_score: int, risk_decision_id: str, ts: str) -> None:
+    with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            conn.execute(
+                """INSERT INTO payment_intents
+                (id,merchant_id,destination_account_id,amount_minor,currency,rail,payer_ref,description,status,external_reference,idempotency_key,created_at,updated_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (payment_id, merchant_id, destination_account_id, amount_minor, currency, selected.rail, payer_ref, description, "dispatching", None, idempotency_key, ts, ts),
+            )
+            conn.execute(
+                """INSERT INTO route_decisions(payment_id,requested_rail,selected_rail,score,cost_bps,latency_ms,success_probability,created_at)
+                   VALUES (?,?,?,?,?,?,?,?)""",
+                (payment_id, requested_rail, selected.rail, selected.score, selected.cost_bps, selected.latency_ms, selected.success_probability, ts),
+            )
+            updated = conn.execute(
+                """UPDATE payment_idempotency
+                   SET status='committed',payment_id=?,updated_at=?
+                   WHERE idempotency_key=? AND request_hash=? AND status='reserved'""",
+                (payment_id, ts, idempotency_key, request_hash),
+            )
+            if updated.rowcount != 1:
+                raise PaymentError("payment idempotency reservation was lost before production dispatch")
+            append_audit(
+                "payment.production_dispatch_committed",
+                payment_id,
+                {
+                    "merchant_id": merchant_id,
+                    "amount_minor": amount_minor,
+                    "currency": currency,
+                    "requested_rail": requested_rail,
+                    "selected_rail": selected.rail,
+                    "risk_score": risk_score,
+                    "risk_decision_id": risk_decision_id,
+                    "idempotency_key": idempotency_key,
+                },
+                conn=conn,
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+
+
+def _finish_production_dispatch(payment_id: str, *, external_reference: str, provider_status: str) -> dict:
+    ts = now_iso()
+    with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            updated = conn.execute(
+                """UPDATE payment_intents
+                   SET status='pending',external_reference=?,updated_at=?
+                   WHERE id=? AND status='dispatching'""",
+                (external_reference, ts, payment_id),
+            )
+            if updated.rowcount != 1:
+                raise PaymentError("production payment state changed before dispatch result commit")
+            append_audit(
+                "payment.production_dispatched",
+                payment_id,
+                {"external_reference": external_reference, "provider_initial_status": provider_status},
+                conn=conn,
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+    payment = get_payment(payment_id)
+    if not payment:
+        raise PaymentError("production payment disappeared after dispatch")
+    payment["provider_initial_status"] = provider_status
+    payment["reconciliation_required"] = False
+    return payment
+
+
+def _mark_production_dispatch_ambiguous(payment_id: str, error_type: str) -> dict:
+    ts = now_iso()
+    with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            updated = conn.execute(
+                """UPDATE payment_intents
+                   SET status='provider_ambiguous',updated_at=?
+                   WHERE id=? AND status='dispatching'""",
+                (ts, payment_id),
+            )
+            if updated.rowcount not in {0, 1}:
+                raise PaymentError("unexpected production payment state update count")
+            append_audit(
+                "payment.production_dispatch_ambiguous",
+                payment_id,
+                {"error_type": error_type, "automatic_retry": False},
+                conn=conn,
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+    payment = get_payment(payment_id)
+    if not payment:
+        raise PaymentError("ambiguous production payment disappeared")
+    payment["reconciliation_required"] = True
+    payment["automatic_retry_allowed"] = False
+    return payment
+
+
+def _decorate_payment(payment: dict, selected, requested_rail: str, risk_score: int) -> dict:
+    payment["routing"] = {
+        "requested_rail": requested_rail,
+        "selected_rail": selected.rail,
+        "score": selected.score,
+        "cost_bps": selected.cost_bps,
+        "latency_ms": selected.latency_ms,
+        "success_probability": selected.success_probability,
+    }
+    payment["risk_score"] = risk_score
+    if payment.get("status") in {"dispatching", "provider_ambiguous"}:
+        payment["reconciliation_required"] = True
+        payment["automatic_retry_allowed"] = False
+    return payment
+
+
 async def create_payment_intent(*, merchant_id: str, destination_account_id: str, amount_minor: int, currency: str, rail: str, payer_ref: str | None, description: str | None, idempotency_key: str, callback_url: str | None = None) -> dict:
     currency = currency.upper()
     requested_rail = rail.lower()
@@ -383,18 +527,69 @@ async def create_payment_intent(*, merchant_id: str, destination_account_id: str
         payment = get_payment(existing_payment_id or "")
         if not payment:
             raise PaymentError("idempotency record references a missing payment")
-        return payment
+        return _decorate_payment(payment, selected, requested_rail, risk.score)
 
     payment_id = f"pay_{uuid.uuid4().hex}"
     ts = now_iso()
-    result = await RAILS[selected.rail].create_payment(RailRequest(
-        payment_id=payment_id,
-        amount_minor=amount_minor,
-        currency=currency,
-        payer_ref=payer_ref,
-        description=description,
-        callback_url=callback_url,
-    ))
+
+    if settings.is_production:
+        try:
+            _persist_production_dispatch(
+                payment_id=payment_id,
+                merchant_id=merchant_id,
+                destination_account_id=destination_account_id,
+                amount_minor=amount_minor,
+                currency=currency,
+                selected=selected,
+                requested_rail=requested_rail,
+                payer_ref=payer_ref,
+                description=description,
+                idempotency_key=idempotency_key,
+                request_hash=request_hash,
+                risk_score=risk.score,
+                risk_decision_id=risk.decision_id,
+                ts=ts,
+            )
+        except Exception:
+            try:
+                _release_payment_idempotency(idempotency_key, request_hash)
+            except Exception:
+                pass
+            raise
+
+        try:
+            result = await RAILS[selected.rail].create_payment(RailRequest(
+                payment_id=payment_id,
+                amount_minor=amount_minor,
+                currency=currency,
+                payer_ref=payer_ref,
+                description=description,
+                callback_url=callback_url,
+            ))
+        except Exception as exc:
+            payment = _mark_production_dispatch_ambiguous(payment_id, type(exc).__name__)
+            return _decorate_payment(payment, selected, requested_rail, risk.score)
+
+        payment = _finish_production_dispatch(
+            payment_id,
+            external_reference=result.external_reference,
+            provider_status=result.status,
+        )
+        return _decorate_payment(payment, selected, requested_rail, risk.score)
+
+    try:
+        result = await RAILS[selected.rail].create_payment(RailRequest(
+            payment_id=payment_id,
+            amount_minor=amount_minor,
+            currency=currency,
+            payer_ref=payer_ref,
+            description=description,
+            callback_url=callback_url,
+        ))
+    except Exception:
+        _release_payment_idempotency(idempotency_key, request_hash)
+        raise
+
     with connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
         try:
@@ -437,16 +632,9 @@ async def create_payment_intent(*, merchant_id: str, destination_account_id: str
             conn.execute("ROLLBACK")
             raise
     payment = get_payment(payment_id)
-    payment["routing"] = {
-        "requested_rail": requested_rail,
-        "selected_rail": selected.rail,
-        "score": selected.score,
-        "cost_bps": selected.cost_bps,
-        "latency_ms": selected.latency_ms,
-        "success_probability": selected.success_probability,
-    }
-    payment["risk_score"] = risk.score
-    return payment
+    if not payment:
+        raise PaymentError("payment disappeared after creation")
+    return _decorate_payment(payment, selected, requested_rail, risk.score)
 
 
 async def create_agent_payment(*, mandate_id: str, merchant_id: str, destination_account_id: str, amount_minor: int, currency: str, rail: str, description: str | None, idempotency_key: str) -> dict:
@@ -558,4 +746,16 @@ def reconcile() -> dict:
         dangling = conn.execute(
             "SELECT COUNT(*) AS n FROM payment_intents WHERE status='succeeded' AND id NOT IN (SELECT REPLACE(reference,'payment:','') FROM journal_entries WHERE reference LIKE 'payment:%')"
         ).fetchone()["n"]
-    return {"balanced": len(unbalanced) == 0, "unbalanced_journals": [dict(r) for r in unbalanced], "succeeded_without_journal": int(dangling)}
+        provider_attention = conn.execute(
+            """SELECT id,rail,status,external_reference,updated_at
+               FROM payment_intents
+               WHERE status IN ('dispatching','provider_ambiguous')
+               ORDER BY updated_at"""
+        ).fetchall()
+    return {
+        "balanced": len(unbalanced) == 0,
+        "unbalanced_journals": [dict(r) for r in unbalanced],
+        "succeeded_without_journal": int(dangling),
+        "provider_attention_required": len(provider_attention),
+        "provider_attention": [dict(r) for r in provider_attention],
+    }
