@@ -41,3 +41,29 @@ async def test_required_runtime_404_is_not_healthy(monkeypatch):
 
     assert result["all_required_runtime_healthy"] is False
     assert result["components"][0]["state"] == "unhealthy"
+
+
+@pytest.mark.asyncio
+async def test_required_runtime_redirect_is_not_followed_or_counted_healthy(monkeypatch):
+    monkeypatch.setenv("MUSITU_TEST_HEALTH_URL", "https://runtime.invalid/health")
+    options = {}
+
+    def client_factory(*args, **kwargs):
+        options.update(kwargs)
+        return _Client(302)
+
+    monkeypatch.setattr("app.component_registry.httpx.AsyncClient", client_factory)
+    component = Component(
+        "test-runtime",
+        "Test Runtime",
+        "test",
+        "runtime",
+        health_env="MUSITU_TEST_HEALTH_URL",
+    )
+
+    result = await probe_components([component])
+
+    assert options["follow_redirects"] is False
+    assert result["all_required_runtime_healthy"] is False
+    assert result["components"][0]["state"] == "unhealthy"
+    assert result["components"][0]["status_code"] == 302
