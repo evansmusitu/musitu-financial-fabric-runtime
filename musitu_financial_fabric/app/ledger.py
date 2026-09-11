@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import os
+import subprocess
+import sys
 import uuid
 import zlib
 from typing import Iterable
@@ -24,6 +28,10 @@ def _uses_tigerbeetle() -> bool:
     valid production deployment.
     """
     return settings.ledger_backend == "tigerbeetle"
+
+
+def _uses_bounded_production_tigerbeetle() -> bool:
+    return settings.is_production and settings.uses_postgres and _uses_tigerbeetle()
 
 
 def _u128(text: str) -> int:
@@ -51,6 +59,47 @@ def _tb_client():
     return tb, tb.ClientSync(cluster_id=settings.tigerbeetle_cluster_id, replica_addresses=addresses)
 
 
+def _tb_worker_request(payload: dict) -> dict:
+    timeout_seconds = int(settings.tigerbeetle_operation_timeout_seconds)
+    if not 1 <= timeout_seconds <= 30:
+        raise LedgerError("TigerBeetle production operation timeout must be between 1 and 30 seconds")
+    env = os.environ.copy()
+    env.update(
+        {
+            "MUSITU_ENV": settings.environment,
+            "MUSITU_METADATA_DB_URL": settings.metadata_db_url,
+            "MUSITU_LEDGER_BACKEND": settings.ledger_backend,
+            "MUSITU_TIGERBEETLE_CLUSTER_ID": str(settings.tigerbeetle_cluster_id),
+            "MUSITU_TIGERBEETLE_ADDRESSES": settings.tigerbeetle_addresses,
+            "MUSITU_TIGERBEETLE_OPERATION_TIMEOUT_SECONDS": str(timeout_seconds),
+            "MUSITU_TIGERBEETLE_ACCOUNT_CODE": str(settings.tigerbeetle_account_code),
+            "MUSITU_TIGERBEETLE_TRANSFER_CODE": str(settings.tigerbeetle_transfer_code),
+        }
+    )
+    try:
+        completed = subprocess.run(
+            [sys.executable, "-m", "app.tb_worker"],
+            input=json.dumps(payload, separators=(",", ":")),
+            text=True,
+            capture_output=True,
+            timeout=timeout_seconds,
+            check=False,
+            env=env,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise LedgerError(f"TigerBeetle operation timed out after {timeout_seconds} seconds") from exc
+    try:
+        response = json.loads(completed.stdout.strip()) if completed.stdout.strip() else {}
+    except Exception as exc:
+        raise LedgerError("TigerBeetle worker returned an invalid response") from exc
+    if completed.returncode != 0 or not response.get("ok"):
+        error_type = str(response.get("error_type") or "request_failed")
+        failures = response.get("failures") or []
+        detail = ",".join(str(value) for value in failures) if failures else error_type
+        raise LedgerError(f"TigerBeetle worker failed: {detail}")
+    return response
+
+
 def create_account(owner_type: str, owner_id: str, currency: str, kind: str) -> dict:
     currency = currency.upper()
     account_id = _app_account_id(owner_type, owner_id, currency, kind) if _uses_tigerbeetle() else f"acct_{uuid.uuid4().hex}"
@@ -67,27 +116,36 @@ def create_account(owner_type: str, owner_id: str, currency: str, kind: str) -> 
                 return dict(existing)
 
             if _uses_tigerbeetle():
-                tb, client = _tb_client()
-                try:
-                    event = tb.Account(
-                        id=_u128(account_id),
-                        debits_pending=0,
-                        debits_posted=0,
-                        credits_pending=0,
-                        credits_posted=0,
-                        user_data_128=0,
-                        user_data_64=0,
-                        user_data_32=0,
-                        ledger=_ledger_id(currency),
-                        code=settings.tigerbeetle_account_code,
-                        flags=0,
-                        timestamp=0,
+                if _uses_bounded_production_tigerbeetle():
+                    _tb_worker_request(
+                        {
+                            "operation": "create_account",
+                            "account_id": account_id,
+                            "currency": currency,
+                        }
                     )
-                    result = client.create_accounts([event])[0]
-                    if result.status not in {tb.CreateAccountStatus.CREATED, tb.CreateAccountStatus.EXISTS}:
-                        raise LedgerError(f"TigerBeetle account creation failed: {result.status}")
-                finally:
-                    client.close()
+                else:
+                    tb, client = _tb_client()
+                    try:
+                        event = tb.Account(
+                            id=_u128(account_id),
+                            debits_pending=0,
+                            debits_posted=0,
+                            credits_pending=0,
+                            credits_posted=0,
+                            user_data_128=0,
+                            user_data_64=0,
+                            user_data_32=0,
+                            ledger=_ledger_id(currency),
+                            code=settings.tigerbeetle_account_code,
+                            flags=0,
+                            timestamp=0,
+                        )
+                        result = client.create_accounts([event])[0]
+                        if result.status not in {tb.CreateAccountStatus.CREATED, tb.CreateAccountStatus.EXISTS}:
+                            raise LedgerError(f"TigerBeetle account creation failed: {result.status}")
+                    finally:
+                        client.close()
 
             conn.execute(
                 "INSERT INTO accounts(id,owner_type,owner_id,currency,kind,status,created_at) VALUES (?,?,?,?,?,'active',?)",
@@ -131,15 +189,27 @@ def balance(account_id: str) -> int:
         account = get_account(account_id)
         if not account:
             raise LedgerError(f"Invalid account: {account_id}")
-        _, client = _tb_client()
-        try:
-            rows = client.lookup_accounts([_u128(account_id)])
-        finally:
-            client.close()
+        if _uses_bounded_production_tigerbeetle():
+            response = _tb_worker_request({"operation": "lookup_accounts", "ids": [_u128(account_id)]})
+            rows = response.get("accounts") or []
+        else:
+            _, client = _tb_client()
+            try:
+                raw_rows = client.lookup_accounts([_u128(account_id)])
+                rows = [
+                    {
+                        "id": int(row.id),
+                        "debits_posted": int(row.debits_posted),
+                        "credits_posted": int(row.credits_posted),
+                    }
+                    for row in raw_rows
+                ]
+            finally:
+                client.close()
         if len(rows) != 1:
             raise LedgerError("TigerBeetle account missing")
         row = rows[0]
-        return int(row.credits_posted) - int(row.debits_posted)
+        return int(row["credits_posted"]) - int(row["debits_posted"])
 
     with connect() as conn:
         row = conn.execute(
@@ -203,36 +273,47 @@ def post(reference: str, memo: str, postings: Iterable[tuple[str, int]]) -> str:
             currency = next(iter(currencies))
 
             if _uses_tigerbeetle():
-                tb, client = _tb_client()
-                try:
-                    legs = _transfer_legs(postings)
-                    events = []
-                    for index, (debit_id, credit_id, amount) in enumerate(legs):
-                        flags = tb.TransferFlags.LINKED if index < len(legs) - 1 else 0
-                        events.append(
-                            tb.Transfer(
-                                id=_u128(f"{reference}|{index}"),
-                                debit_account_id=_u128(debit_id),
-                                credit_account_id=_u128(credit_id),
-                                amount=amount,
-                                pending_id=0,
-                                user_data_128=_u128(journal_id),
-                                user_data_64=0,
-                                user_data_32=0,
-                                timeout=0,
-                                ledger=_ledger_id(currency),
-                                code=settings.tigerbeetle_transfer_code,
-                                flags=flags,
-                                timestamp=0,
+                legs = _transfer_legs(postings)
+                if _uses_bounded_production_tigerbeetle():
+                    _tb_worker_request(
+                        {
+                            "operation": "create_transfers",
+                            "reference": reference,
+                            "journal_id": journal_id,
+                            "currency": currency,
+                            "legs": legs,
+                        }
+                    )
+                else:
+                    tb, client = _tb_client()
+                    try:
+                        events = []
+                        for index, (debit_id, credit_id, amount) in enumerate(legs):
+                            flags = tb.TransferFlags.LINKED if index < len(legs) - 1 else 0
+                            events.append(
+                                tb.Transfer(
+                                    id=_u128(f"{reference}|{index}"),
+                                    debit_account_id=_u128(debit_id),
+                                    credit_account_id=_u128(credit_id),
+                                    amount=amount,
+                                    pending_id=0,
+                                    user_data_128=_u128(journal_id),
+                                    user_data_64=0,
+                                    user_data_32=0,
+                                    timeout=0,
+                                    ledger=_ledger_id(currency),
+                                    code=settings.tigerbeetle_transfer_code,
+                                    flags=flags,
+                                    timestamp=0,
+                                )
                             )
-                        )
-                    results = client.create_transfers(events)
-                    allowed = {tb.CreateTransferStatus.CREATED, tb.CreateTransferStatus.EXISTS}
-                    failures = [str(result.status) for result in results if result.status not in allowed]
-                    if failures:
-                        raise LedgerError("TigerBeetle transfer rejected: " + ",".join(failures))
-                finally:
-                    client.close()
+                        results = client.create_transfers(events)
+                        allowed = {tb.CreateTransferStatus.CREATED, tb.CreateTransferStatus.EXISTS}
+                        failures = [str(result.status) for result in results if result.status not in allowed]
+                        if failures:
+                            raise LedgerError("TigerBeetle transfer rejected: " + ",".join(failures))
+                    finally:
+                        client.close()
 
             conn.execute(
                 "INSERT INTO journal_entries(id,reference,memo,created_at) VALUES (?,?,?,?)",
