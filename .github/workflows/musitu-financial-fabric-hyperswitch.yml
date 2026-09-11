@@ -29,22 +29,40 @@ jobs:
           test "$(git -C /tmp/hyperswitch rev-parse HEAD)" = "$HYPERSWITCH_UPSTREAM_SHA"
       - name: Record upstream revision
         run: git -C /tmp/hyperswitch rev-parse HEAD | tee /tmp/hyperswitch.sha
-      - name: Apply upstream Linux Superposition init shell workaround
+      - name: Apply exact CI diagnostics and Superposition init workaround
         working-directory: /tmp/hyperswitch
         run: |
           python - <<'PY'
           from pathlib import Path
-          p = Path('docker-compose.yml')
-          text = p.read_text()
+
+          compose = Path('docker-compose.yml')
+          text = compose.read_text()
           old = 'command: sh -c "apk add --no-cache curl jq yq && sh /seed_superposition.sh"'
           new = 'command: sh -c "apk add --no-cache bash curl jq yq && bash /seed_superposition.sh"'
           if old not in text:
               raise SystemExit('Upstream compose signature changed; refusing an unverified patch')
-          p.write_text(text.replace(old, new, 1))
+          compose.write_text(text.replace(old, new, 1))
+
+          setup = Path('scripts/setup.sh')
+          text = setup.read_text()
+          old = '''    scarf_call
+              cleanup
+              exit $exit_code'''.replace('      ', '')
+          new = '''    scarf_call
+              if [ "${MUSITU_CI_PRESERVE_FAILED_STACK:-}" != "1" ]; then
+                  cleanup
+              fi
+              exit $exit_code'''.replace('      ', '')
+          if old not in text:
+              raise SystemExit('Upstream setup error-handler signature changed; refusing an unverified diagnostics patch')
+          setup.write_text(text.replace(old, new, 1))
           PY
           grep -F 'bash /seed_superposition.sh' docker-compose.yml
+          grep -F 'MUSITU_CI_PRESERVE_FAILED_STACK' scripts/setup.sh
       - name: Start official standalone stack
         working-directory: /tmp/hyperswitch
+        env:
+          MUSITU_CI_PRESERVE_FAILED_STACK: '1'
         run: printf '3\n' | scripts/setup.sh
       - name: Verify Hyperswitch health and deep readiness
         run: |
@@ -79,14 +97,19 @@ jobs:
             docker logs hyperswitch-hyperswitch-server-1 --tail 200 || true
             exit 1
           fi
-      - name: Capture containers and resolved image identities
+      - name: Capture containers, image identities, and failure logs
         if: always()
+        working-directory: /tmp/hyperswitch
         run: |
           docker ps -a | tee /tmp/hyperswitch-containers.txt
           docker ps -a --format '{{.Image}}' | sort -u | while read -r image; do
             [ -n "$image" ] || continue
+            printf '%s ' "$image"
             docker image inspect "$image" --format '{{json .RepoDigests}}' || true
           done | tee /tmp/hyperswitch-image-digests.txt
+          docker compose logs --no-color migration_runner > /tmp/hyperswitch-migration-runner.log 2>&1 || true
+          docker compose logs --no-color superposition-init > /tmp/hyperswitch-superposition-init.log 2>&1 || true
+          docker compose logs --no-color hyperswitch-server > /tmp/hyperswitch-server.log 2>&1 || true
       - name: Upload evidence
         if: always()
         continue-on-error: true
@@ -99,3 +122,6 @@ jobs:
             /tmp/hyperswitch-ready.json
             /tmp/hyperswitch-containers.txt
             /tmp/hyperswitch-image-digests.txt
+            /tmp/hyperswitch-migration-runner.log
+            /tmp/hyperswitch-superposition-init.log
+            /tmp/hyperswitch-server.log
