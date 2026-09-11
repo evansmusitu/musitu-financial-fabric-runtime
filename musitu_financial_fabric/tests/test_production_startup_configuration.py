@@ -49,6 +49,17 @@ def test_nonpositive_request_body_limit_fails_startup_and_readiness():
     assert "request_body_limit" in _failed_keys(cfg)
 
 
+def test_payment_limit_above_postgres_bigint_fails_startup_and_readiness():
+    cfg = _cfg(max_single_payment_minor=1 << 63)
+    with pytest.raises(ProductionGateError, match="PostgreSQL BIGINT"):
+        enforce_safe_startup(cfg)
+    assert "single_payment_limit" in _failed_keys(cfg)
+
+
+def test_postgres_bigint_payment_limit_boundary_is_accepted():
+    enforce_safe_startup(_cfg(max_single_payment_minor=(1 << 63) - 1))
+
+
 def test_blank_required_auth_scope_fails_startup_and_readiness():
     cfg = _cfg(auth_required_scope="   ")
     with pytest.raises(ProductionGateError, match="scope"):
