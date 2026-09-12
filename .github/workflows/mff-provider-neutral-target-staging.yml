@@ -6,6 +6,7 @@ on:
     paths:
       - 'deploy/musitu-financial-fabric/provider-neutral/**'
       - 'musitu_financial_fabric/scripts/validate_provider_neutral_target.py'
+      - 'musitu_financial_fabric/scripts/validate_benchmark_evidence.py'
       - 'musitu_financial_fabric/stack/required-components.json'
       - '.github/workflows/mff-provider-neutral-target-staging.yml'
   workflow_dispatch:
@@ -30,6 +31,12 @@ jobs:
 
       - name: Exercise benchmark evidence validator
         run: python musitu_financial_fabric/scripts/validate_provider_neutral_target.py --self-test
+
+      - name: Exercise raw benchmark evidence byte-binding gate
+        run: python musitu_financial_fabric/scripts/validate_benchmark_evidence.py --self-test
+
+      - name: Validate all currently measured benchmark evidence rows
+        run: python musitu_financial_fabric/scripts/validate_benchmark_evidence.py --contract
 
       - name: Prove target is intentionally not deployable yet
         shell: bash
