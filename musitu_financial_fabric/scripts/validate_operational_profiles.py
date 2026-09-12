@@ -158,8 +158,7 @@ def _probe_timing_errors(name: str, timing: object, section: dict[str, Any]) -> 
     if not isinstance(timing, dict) or not timing:
         return [f"{name} configured probe timing_policy must be a non-empty object"]
     errors: list[str] = []
-    required = section.get("configured_probe_timing_required_fields", [])
-    for field in required:
+    for field in section.get("configured_probe_timing_required_fields", []):
         value = timing.get(field)
         if isinstance(value, bool) or not isinstance(value, int) or value < 1:
             errors.append(f"{name} configured probe {field} must be an integer >= 1")
@@ -201,9 +200,7 @@ def _probe_block_errors(name: str, block: object, section: dict[str, Any]) -> li
 
 def _probe_errors(key: str, row: dict[str, Any], payload: object, policy: dict[str, Any]) -> list[str]:
     section = policy["profiles"]["probe_profile"]
-    errors = _common_errors(
-        key, row, payload, str(section["profile_schema_version"]), list(section["required_fields"])
-    )
+    errors = _common_errors(key, row, payload, str(section["profile_schema_version"]), list(section["required_fields"]))
     if not isinstance(payload, dict):
         return errors
     for name in ("startup", "readiness", "liveness"):
@@ -258,9 +255,7 @@ def _allow_rule_errors(direction: str, rules: object, section: dict[str, Any]) -
 
 def _network_errors(key: str, row: dict[str, Any], payload: object, policy: dict[str, Any]) -> list[str]:
     section = policy["profiles"]["network_profile"]
-    errors = _common_errors(
-        key, row, payload, str(section["profile_schema_version"]), list(section["required_fields"])
-    )
+    errors = _common_errors(key, row, payload, str(section["profile_schema_version"]), list(section["required_fields"]))
     if not isinstance(payload, dict):
         return errors
     if payload.get("default_deny_inherited") is not True:
@@ -283,9 +278,7 @@ def _valid_pdb_budget_value(value: object) -> bool:
 
 def _disruption_errors(key: str, row: dict[str, Any], payload: object, policy: dict[str, Any]) -> list[str]:
     section = policy["profiles"]["disruption_budget_profile"]
-    errors = _common_errors(
-        key, row, payload, str(section["profile_schema_version"]), list(section["required_fields"])
-    )
+    errors = _common_errors(key, row, payload, str(section["profile_schema_version"]), list(section["required_fields"]))
     if not isinstance(payload, dict):
         return errors
     status = payload.get("status")
@@ -302,16 +295,11 @@ def _disruption_errors(key: str, row: dict[str, Any], payload: object, policy: d
         if not isinstance(budget, dict):
             errors.append("configured disruption budget budget must be an object")
         else:
-            populated = [
-                name for name in ("min_available", "max_unavailable")
-                if _nonempty(budget.get(name))
-            ]
+            populated = [name for name in ("min_available", "max_unavailable") if _nonempty(budget.get(name))]
             if len(populated) != 1:
                 errors.append("configured disruption budget must set exactly one of min_available or max_unavailable")
             elif not _valid_pdb_budget_value(budget.get(populated[0])):
-                errors.append(
-                    f"configured disruption budget {populated[0]} must be a non-negative int32 or percentage from 0% through 100%"
-                )
+                errors.append(f"configured disruption budget {populated[0]} must be a non-negative int32 or percentage from 0% through 100%")
     elif status == "not_applicable":
         for field in section.get("not_applicable_required_fields", []):
             if not _nonempty(payload.get(field)):
@@ -319,11 +307,61 @@ def _disruption_errors(key: str, row: dict[str, Any], payload: object, policy: d
     return errors
 
 
+def _optional_string_array_errors(label: str, value: object) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        return [f"{label} must be an array when provided"]
+    if any(not isinstance(item, str) or not item.strip() for item in value):
+        return [f"{label} must contain only non-empty strings"]
+    if len(value) != len(set(value)):
+        return [f"{label} must not contain duplicate values"]
+    return []
+
+
+def _anti_affinity_constraint_errors(
+    index: int,
+    constraint: object,
+    topology_keys: set[str],
+    section: dict[str, Any],
+) -> list[str]:
+    prefix = f"constraints[{index}]"
+    if not isinstance(constraint, dict):
+        return [f"{prefix} must be an object"]
+    errors: list[str] = []
+    for field in section.get("constraint_required_fields", []):
+        if field not in constraint:
+            errors.append(f"{prefix} missing {field}")
+    mode = constraint.get("mode")
+    if mode not in set(section.get("allowed_constraint_modes", [])):
+        errors.append(f"{prefix}.mode must be required or preferred")
+    topology_key = constraint.get("topology_key")
+    if not isinstance(topology_key, str) or not topology_key.strip():
+        errors.append(f"{prefix}.topology_key must be a non-empty string")
+    elif topology_key not in topology_keys:
+        errors.append(f"{prefix}.topology_key must be declared in topology_keys")
+    if not isinstance(constraint.get("label_selector"), dict):
+        errors.append(f"{prefix}.label_selector must be an explicit object; null is not accepted")
+    errors.extend(_optional_string_array_errors(f"{prefix}.match_label_keys", constraint.get("match_label_keys")))
+    errors.extend(_optional_string_array_errors(f"{prefix}.mismatch_label_keys", constraint.get("mismatch_label_keys")))
+    errors.extend(_optional_string_array_errors(f"{prefix}.namespaces", constraint.get("namespaces")))
+    namespace_selector = constraint.get("namespace_selector")
+    if namespace_selector is not None and not isinstance(namespace_selector, dict):
+        errors.append(f"{prefix}.namespace_selector must be an object when provided")
+    if mode == "preferred":
+        weight = constraint.get("weight")
+        minimum = int(section.get("preferred_weight_min", 1))
+        maximum = int(section.get("preferred_weight_max", 100))
+        if isinstance(weight, bool) or not isinstance(weight, int) or not (minimum <= weight <= maximum):
+            errors.append(f"{prefix}.weight must be an integer from {minimum} through {maximum} for preferred mode")
+    elif mode == "required" and "weight" in constraint:
+        errors.append(f"{prefix}.weight must not be set for required mode")
+    return errors
+
+
 def _anti_affinity_errors(key: str, row: dict[str, Any], payload: object, policy: dict[str, Any]) -> list[str]:
     section = policy["profiles"]["anti_affinity_profile"]
-    errors = _common_errors(
-        key, row, payload, str(section["profile_schema_version"]), list(section["required_fields"])
-    )
+    errors = _common_errors(key, row, payload, str(section["profile_schema_version"]), list(section["required_fields"]))
     if not isinstance(payload, dict):
         return errors
     status = payload.get("status")
@@ -335,10 +373,19 @@ def _anti_affinity_errors(key: str, row: dict[str, Any], payload: object, policy
                 errors.append(f"configured anti-affinity profile missing {field}")
         keys = payload.get("topology_keys")
         constraints = payload.get("constraints")
-        if not isinstance(keys, list) or not keys or any(not isinstance(item, str) or not item.strip() for item in keys):
+        valid_keys = isinstance(keys, list) and bool(keys) and all(isinstance(item, str) and item.strip() for item in keys)
+        if not valid_keys:
             errors.append("configured anti-affinity topology_keys must be a non-empty string array")
-        if not isinstance(constraints, list) or not constraints or any(not _nonempty(item) for item in constraints):
+            topology_key_set: set[str] = set()
+        else:
+            topology_key_set = {str(item) for item in keys}
+            if len(topology_key_set) != len(keys):
+                errors.append("configured anti-affinity topology_keys must not contain duplicates")
+        if not isinstance(constraints, list) or not constraints:
             errors.append("configured anti-affinity constraints must be a non-empty array")
+        else:
+            for index, constraint in enumerate(constraints):
+                errors.extend(_anti_affinity_constraint_errors(index, constraint, topology_key_set, section))
     elif status == "not_applicable":
         for field in section.get("not_applicable_required_fields", []):
             if not _nonempty(payload.get(field)):
@@ -381,9 +428,7 @@ def _policy_errors(policy: object) -> list[str]:
     probe = profiles["probe_profile"]
     if set(probe.get("configured_probe_mechanism_types") or []) != {"exec", "grpc", "http_get", "tcp_socket"}:
         errors.append("probe profile mechanism type set is invalid")
-    if probe.get("configured_probe_timing_required_fields") != [
-        "period_seconds", "timeout_seconds", "failure_threshold", "success_threshold"
-    ]:
+    if probe.get("configured_probe_timing_required_fields") != ["period_seconds", "timeout_seconds", "failure_threshold", "success_threshold"]:
         errors.append("probe profile timing field set is invalid")
     network = profiles["network_profile"]
     if network.get("default_deny_inherited_required") is not True:
@@ -395,6 +440,13 @@ def _policy_errors(policy: object) -> list[str]:
     disruption = profiles["disruption_budget_profile"]
     if disruption.get("budget_value_semantics") != "non_negative_int32_or_percentage_0_100":
         errors.append("disruption budget policy value semantics are invalid")
+    anti = profiles["anti_affinity_profile"]
+    if anti.get("constraint_required_fields") != ["mode", "topology_key", "label_selector"]:
+        errors.append("anti-affinity constraint required field set is invalid")
+    if set(anti.get("allowed_constraint_modes") or []) != {"required", "preferred"}:
+        errors.append("anti-affinity constraint mode set is invalid")
+    if anti.get("preferred_weight_min") != 1 or anti.get("preferred_weight_max") != 100:
+        errors.append("anti-affinity preferred weight range is invalid")
     return errors
 
 
@@ -403,7 +455,6 @@ def _self_test() -> list[str]:
     failures = _policy_errors(policy)
     if failures:
         return failures
-
     evidence_ref = str(SELF_TEST_EVIDENCE.relative_to(ROOT)).replace("\\", "/")
     evidence_sha = _sha256(SELF_TEST_EVIDENCE)
     digest = "sha256:" + ("1" * 64)
@@ -413,172 +464,102 @@ def _self_test() -> list[str]:
         "authoritative_runtime_base_commit": EXPECTED_BASE_COMMIT,
         "image_digest": digest,
         "environment_id": "self-test-target",
-        "target_validation": {
-            "status": "passed",
-            "evidence_ref": evidence_ref,
-            "evidence_sha256": evidence_sha,
-        },
+        "target_validation": {"status": "passed", "evidence_ref": evidence_ref, "evidence_sha256": evidence_sha},
     }
     configured_probe = {
         "status": "configured",
         "mechanism": {"type": "http_get", "port": 8080, "path": "/healthz", "scheme": "HTTP"},
-        "timing_policy": {
-            "period_seconds": 10,
-            "timeout_seconds": 2,
-            "failure_threshold": 3,
-            "success_threshold": 1,
-            "initial_delay_seconds": 0,
-        },
+        "timing_policy": {"period_seconds": 10, "timeout_seconds": 2, "failure_threshold": 3, "success_threshold": 1, "initial_delay_seconds": 0},
         "failure_semantics": "self-test",
     }
     payloads: dict[str, dict[str, Any]] = {
-        "probe_profile": {
-            **common,
-            "schema_version": "mff.probe-profile.v1",
-            "startup": configured_probe,
-            "readiness": configured_probe,
-            "liveness": configured_probe,
-        },
-        "network_profile": {
-            **common,
-            "schema_version": "mff.network-profile.v1",
-            "default_deny_inherited": True,
-            "ingress_allow_rules": [],
-            "egress_allow_rules": [
-                {
-                    "peer": {"kind": "self-test"},
-                    "ports": [{"port": 443, "protocol": "TCP"}],
-                    "rationale": "self-test",
-                }
-            ],
-            "dns_policy": {"mode": "self-test"},
-        },
-        "disruption_budget_profile": {
-            **common,
-            "schema_version": "mff.disruption-budget-profile.v1",
-            "status": "configured",
-            "selector": {"source": "self-test"},
-            "budget": {"min_available": "50%"},
-            "eviction_semantics": "self-test",
-            "rationale": "self-test",
-        },
-        "anti_affinity_profile": {
-            **common,
-            "schema_version": "mff.anti-affinity-profile.v1",
-            "status": "configured",
-            "topology_keys": ["self-test"],
-            "constraints": [{"source": "self-test"}],
-            "rationale": "self-test",
-        },
+        "probe_profile": {**common, "schema_version": "mff.probe-profile.v1", "startup": configured_probe, "readiness": configured_probe, "liveness": configured_probe},
+        "network_profile": {**common, "schema_version": "mff.network-profile.v1", "default_deny_inherited": True, "ingress_allow_rules": [], "egress_allow_rules": [{"peer": {"kind": "self-test"}, "ports": [{"port": 443, "protocol": "TCP"}], "rationale": "self-test"}], "dns_policy": {"mode": "self-test"}},
+        "disruption_budget_profile": {**common, "schema_version": "mff.disruption-budget-profile.v1", "status": "configured", "selector": {"source": "self-test"}, "budget": {"min_available": "50%"}, "eviction_semantics": "self-test", "rationale": "self-test"},
+        "anti_affinity_profile": {**common, "schema_version": "mff.anti-affinity-profile.v1", "status": "configured", "topology_keys": ["kubernetes.io/hostname"], "constraints": [{"mode": "preferred", "topology_key": "kubernetes.io/hostname", "label_selector": {"matchLabels": {"app": "self-test"}}, "weight": 100}], "rationale": "self-test"},
     }
-
     for field, payload in payloads.items():
-        errors = CHECKERS[field]("self-test", row, payload, policy)
-        if errors:
-            failures.append(f"valid synthetic {field} was rejected: {errors}")
-
+        profile_errors = CHECKERS[field]("self-test", row, payload, policy)
+        if profile_errors:
+            failures.append(f"valid synthetic {field} was rejected: {profile_errors}")
     for field, payload in payloads.items():
         candidate = json.loads(json.dumps(payload))
         candidate["runtime_key"] = "wrong-runtime"
         if not CHECKERS[field]("self-test", row, candidate, policy):
             failures.append(f"{field} self-test failed to reject runtime drift")
-
         candidate = json.loads(json.dumps(payload))
         candidate["authoritative_runtime_base_commit"] = "0" * 40
         if not CHECKERS[field]("self-test", row, candidate, policy):
             failures.append(f"{field} self-test failed to reject release drift")
-
         candidate = json.loads(json.dumps(payload))
         candidate["image_digest"] = "sha256:" + ("2" * 64)
         if not CHECKERS[field]("self-test", row, candidate, policy):
             failures.append(f"{field} self-test failed to reject image drift")
-
         candidate = json.loads(json.dumps(payload))
         candidate["target_validation"]["status"] = "pending"
         if not CHECKERS[field]("self-test", row, candidate, policy):
             failures.append(f"{field} self-test failed to reject unpassed target validation")
-
         candidate = json.loads(json.dumps(payload))
         candidate["target_validation"]["evidence_sha256"] = "0" * 64
         if not CHECKERS[field]("self-test", row, candidate, policy):
             failures.append(f"{field} self-test failed to reject target evidence hash mismatch")
-
     bad_probe = json.loads(json.dumps(payloads["probe_profile"]))
     del bad_probe["readiness"]["mechanism"]
-    if not _probe_errors("self-test", row, bad_probe, policy):
-        failures.append("probe self-test failed to reject incomplete configured readiness probe")
-
+    if not _probe_errors("self-test", row, bad_probe, policy): failures.append("probe self-test failed to reject incomplete configured readiness probe")
     bad_probe_type = json.loads(json.dumps(payloads["probe_profile"]))
     bad_probe_type["readiness"]["mechanism"] = {"type": "self-test"}
-    if not _probe_errors("self-test", row, bad_probe_type, policy):
-        failures.append("probe self-test failed to reject unsupported probe mechanism")
-
+    if not _probe_errors("self-test", row, bad_probe_type, policy): failures.append("probe self-test failed to reject unsupported probe mechanism")
     bad_probe_timing = json.loads(json.dumps(payloads["probe_profile"]))
     bad_probe_timing["readiness"]["timing_policy"]["period_seconds"] = 0
-    if not _probe_errors("self-test", row, bad_probe_timing, policy):
-        failures.append("probe self-test failed to reject invalid period_seconds")
-
+    if not _probe_errors("self-test", row, bad_probe_timing, policy): failures.append("probe self-test failed to reject invalid period_seconds")
     bad_probe_success = json.loads(json.dumps(payloads["probe_profile"]))
     bad_probe_success["liveness"]["timing_policy"]["success_threshold"] = 2
-    if not _probe_errors("self-test", row, bad_probe_success, policy):
-        failures.append("probe self-test failed to enforce liveness success_threshold=1")
-
+    if not _probe_errors("self-test", row, bad_probe_success, policy): failures.append("probe self-test failed to enforce liveness success_threshold=1")
     bad_readiness_grace = json.loads(json.dumps(payloads["probe_profile"]))
     bad_readiness_grace["readiness"]["timing_policy"]["termination_grace_period_seconds"] = 5
-    if not _probe_errors("self-test", row, bad_readiness_grace, policy):
-        failures.append("probe self-test failed to reject readiness termination grace period")
-
+    if not _probe_errors("self-test", row, bad_readiness_grace, policy): failures.append("probe self-test failed to reject readiness termination grace period")
     not_applicable_probe = json.loads(json.dumps(payloads["probe_profile"]))
     not_applicable_probe["liveness"] = {"status": "not_applicable"}
-    if not _probe_errors("self-test", row, not_applicable_probe, policy):
-        failures.append("probe self-test failed to require rationale for not-applicable probe")
-
+    if not _probe_errors("self-test", row, not_applicable_probe, policy): failures.append("probe self-test failed to require rationale for not-applicable probe")
     bad_network = json.loads(json.dumps(payloads["network_profile"]))
     bad_network["default_deny_inherited"] = False
-    if not _network_errors("self-test", row, bad_network, policy):
-        failures.append("network self-test failed to reject default-deny removal")
-
+    if not _network_errors("self-test", row, bad_network, policy): failures.append("network self-test failed to reject default-deny removal")
     bad_network_rule = json.loads(json.dumps(payloads["network_profile"]))
-    bad_network_rule["egress_allow_rules"] = [
-        {"peer": {"kind": "self-test"}, "ports": [], "rationale": "self-test"}
-    ]
-    if not _network_errors("self-test", row, bad_network_rule, policy):
-        failures.append("network self-test failed to reject implicit all-port allow rule")
-
+    bad_network_rule["egress_allow_rules"] = [{"peer": {"kind": "self-test"}, "ports": [], "rationale": "self-test"}]
+    if not _network_errors("self-test", row, bad_network_rule, policy): failures.append("network self-test failed to reject implicit all-port allow rule")
     bad_network_port = json.loads(json.dumps(payloads["network_profile"]))
-    bad_network_port["egress_allow_rules"] = [
-        {"peer": {"kind": "self-test"}, "ports": [{"protocol": "TCP"}], "rationale": "self-test"}
-    ]
-    if not _network_errors("self-test", row, bad_network_port, policy):
-        failures.append("network self-test failed to require an explicit port in every allow entry")
-
+    bad_network_port["egress_allow_rules"] = [{"peer": {"kind": "self-test"}, "ports": [{"protocol": "TCP"}], "rationale": "self-test"}]
+    if not _network_errors("self-test", row, bad_network_port, policy): failures.append("network self-test failed to require an explicit port in every allow entry")
     bad_network_protocol = json.loads(json.dumps(payloads["network_profile"]))
-    bad_network_protocol["egress_allow_rules"] = [
-        {"peer": {"kind": "self-test"}, "ports": [{"port": 443, "protocol": "ANY"}], "rationale": "self-test"}
-    ]
-    if not _network_errors("self-test", row, bad_network_protocol, policy):
-        failures.append("network self-test failed to reject unsupported network protocol")
-
+    bad_network_protocol["egress_allow_rules"] = [{"peer": {"kind": "self-test"}, "ports": [{"port": 443, "protocol": "ANY"}], "rationale": "self-test"}]
+    if not _network_errors("self-test", row, bad_network_protocol, policy): failures.append("network self-test failed to reject unsupported network protocol")
     bad_disruption = json.loads(json.dumps(payloads["disruption_budget_profile"]))
     bad_disruption["budget"] = {"min_available": 1, "max_unavailable": 1}
-    if not _disruption_errors("self-test", row, bad_disruption, policy):
-        failures.append("disruption self-test failed to reject ambiguous budget")
-
+    if not _disruption_errors("self-test", row, bad_disruption, policy): failures.append("disruption self-test failed to reject ambiguous budget")
     bad_disruption_value = json.loads(json.dumps(payloads["disruption_budget_profile"]))
     bad_disruption_value["budget"] = {"min_available": "self-test"}
-    if not _disruption_errors("self-test", row, bad_disruption_value, policy):
-        failures.append("disruption self-test failed to reject invalid budget value")
-
+    if not _disruption_errors("self-test", row, bad_disruption_value, policy): failures.append("disruption self-test failed to reject invalid budget value")
     bad_disruption_percentage = json.loads(json.dumps(payloads["disruption_budget_profile"]))
     bad_disruption_percentage["budget"] = {"max_unavailable": "101%"}
-    if not _disruption_errors("self-test", row, bad_disruption_percentage, policy):
-        failures.append("disruption self-test failed to reject out-of-range percentage")
-
+    if not _disruption_errors("self-test", row, bad_disruption_percentage, policy): failures.append("disruption self-test failed to reject out-of-range percentage")
     bad_anti = json.loads(json.dumps(payloads["anti_affinity_profile"]))
     bad_anti["topology_keys"] = []
-    if not _anti_affinity_errors("self-test", row, bad_anti, policy):
-        failures.append("anti-affinity self-test failed to reject empty topology keys")
-
+    if not _anti_affinity_errors("self-test", row, bad_anti, policy): failures.append("anti-affinity self-test failed to reject empty topology keys")
+    arbitrary_anti = json.loads(json.dumps(payloads["anti_affinity_profile"]))
+    arbitrary_anti["constraints"] = [{"source": "self-test"}]
+    if not _anti_affinity_errors("self-test", row, arbitrary_anti, policy): failures.append("anti-affinity self-test failed to reject arbitrary constraint objects")
+    bad_anti_topology = json.loads(json.dumps(payloads["anti_affinity_profile"]))
+    bad_anti_topology["constraints"][0]["topology_key"] = "topology.kubernetes.io/zone"
+    if not _anti_affinity_errors("self-test", row, bad_anti_topology, policy): failures.append("anti-affinity self-test failed to reject undeclared topology key")
+    bad_anti_weight = json.loads(json.dumps(payloads["anti_affinity_profile"]))
+    bad_anti_weight["constraints"][0]["weight"] = 0
+    if not _anti_affinity_errors("self-test", row, bad_anti_weight, policy): failures.append("anti-affinity self-test failed to reject preferred weight below 1")
+    bad_required_weight = json.loads(json.dumps(payloads["anti_affinity_profile"]))
+    bad_required_weight["constraints"][0]["mode"] = "required"
+    if not _anti_affinity_errors("self-test", row, bad_required_weight, policy): failures.append("anti-affinity self-test failed to reject weight on required constraint")
+    bad_selector = json.loads(json.dumps(payloads["anti_affinity_profile"]))
+    bad_selector["constraints"][0]["label_selector"] = None
+    if not _anti_affinity_errors("self-test", row, bad_selector, policy): failures.append("anti-affinity self-test failed to reject null label selector")
     return failures
 
 
@@ -590,10 +571,8 @@ def _contract_errors() -> tuple[list[str], dict[str, tuple[int, int]]]:
     if contract.get("authoritative_runtime_base_commit") != EXPECTED_BASE_COMMIT:
         errors.append("runtime contract is not anchored to the sealed release")
         return errors, {field: (0, 0) for field in EXPECTED_PROFILE_FIELDS}
-
     defaults = contract.get("defaults_for_unresolved_fields", {})
     counts = {field: [0, 0] for field in EXPECTED_PROFILE_FIELDS}
-
     for row in contract.get("runtimes", []):
         if not isinstance(row, dict):
             errors.append("runtime contract contains a non-object row")
@@ -618,7 +597,6 @@ def _contract_errors() -> tuple[list[str], dict[str, tuple[int, int]]]:
                 errors.append(f"{key}: {field}: {error}")
             if not profile_errors:
                 counts[field][0] += 1
-
     return errors, {field: (values[0], values[1]) for field, values in counts.items()}
 
 
@@ -628,16 +606,14 @@ def main() -> int:
     mode.add_argument("--self-test", action="store_true")
     mode.add_argument("--contract", action="store_true")
     args = parser.parse_args()
-
     if args.self_test:
         failures = _self_test()
         if failures:
             for failure in failures:
                 print(f"SELF-TEST FAILURE: {failure}")
             return 4
-        print("PASS: operational profile validator rejects drift, invalid probe mechanisms/timing, default-deny removal, implicit all-port rules, invalid disruption budgets, and unbound target evidence")
+        print("PASS: operational profile validator rejects drift, invalid probe mechanisms/timing, default-deny removal, implicit all-port rules, invalid disruption budgets, malformed anti-affinity constraints, and unbound target evidence")
         return 0
-
     errors, counts = _contract_errors()
     if errors:
         for error in errors:
@@ -646,7 +622,7 @@ def main() -> int:
     for field in EXPECTED_PROFILE_FIELDS:
         resolved, unresolved = counts[field]
         print(f"PASS: {field}: validated {resolved} resolved profiles; {unresolved} remain unresolved")
-    print("BOUNDARY: no probe mechanisms/timings, network allowlists, disruption budgets, topology constraints, or target execution are inferred from unresolved profiles")
+    print("BOUNDARY: no probe mechanisms/timings, network allowlists, disruption budgets, anti-affinity selector/topology behavior, scheduler admission behavior, or target execution are inferred from unresolved profiles")
     return 0
 
 
