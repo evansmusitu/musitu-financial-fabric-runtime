@@ -76,7 +76,7 @@ variable "production_enabled_rails" {
   default     = []
   validation {
     condition     = alltrue([for rail in var.production_enabled_rails : contains(["ecocash"], lower(rail))])
-    error_messae = "Only production connectors implemented by this release may be enabled."
+    error_message = "Only production connectors implemented by this release may be enabled."
   }
 }
 
@@ -110,7 +110,7 @@ locals {
     lower(var.authorization_manifest_sha256) == sha256(local.authorization_manifest_raw)
   )
   authorization_evidence_bundle_path   = trimspace(try(local.authorization_manifest.evidence_bundle.path, ""))
-  authorization_evidence_bundle_sha256 = lower(trimspace(try(local.authorization_manifest.evidence_bundle.sha256, ""))
+  authorization_evidence_bundle_sha256 = lower(trimspace(try(local.authorization_manifest.evidence_bundle.sha256, "")))
   authorization_evidence_bundle_hash_matches = (
     local.authorization_evidence_bundle_path != "" &&
     can(regex("^[0-9a-fA-F]{64}$", local.authorization_evidence_bundle_sha256)) &&
