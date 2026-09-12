@@ -76,7 +76,7 @@ variable "production_enabled_rails" {
   default     = []
   validation {
     condition     = alltrue([for rail in var.production_enabled_rails : contains(["ecocash"], lower(rail))])
-    error_message = "Only production connectors implemented by this release may be enabled."
+    error_messae = "Only production connectors implemented by this release may be enabled."
   }
 }
 
@@ -108,6 +108,13 @@ locals {
     local.authorization_manifest_present &&
     can(regex("^[0-9a-fA-F]{64}$", var.authorization_manifest_sha256)) &&
     lower(var.authorization_manifest_sha256) == sha256(local.authorization_manifest_raw)
+  )
+  authorization_evidence_bundle_path   = trimspace(try(local.authorization_manifest.evidence_bundle.path, ""))
+  authorization_evidence_bundle_sha256 = lower(trimspace(try(local.authorization_manifest.evidence_bundle.sha256, ""))
+  authorization_evidence_bundle_hash_matches = (
+    local.authorization_evidence_bundle_path != "" &&
+    can(regex("^[0-9a-fA-F]{64}$", local.authorization_evidence_bundle_sha256)) &&
+    try(filesha256(local.authorization_evidence_bundle_path) == local.authorization_evidence_bundle_sha256, false)
   )
 
   required_evidence = ["regulator", "sponsor_bank", "data_protection", "independent_security", "rail_provider"]
@@ -240,6 +247,7 @@ resource "terraform_data" "musitu_production_guard" {
         var.environment == "production" &&
         contains(["pilot", "live"], var.production_mode) &&
         local.authorization_hash_matches &&
+        local.authorization_evidence_bundle_hash_matches &&
         local.evidence_approved &&
         local.funds_scope_matches &&
         local.authorization_not_expired &&
@@ -247,7 +255,7 @@ resource "terraform_data" "musitu_production_guard" {
         local.currencies_within_authorization &&
         local.payment_limit_within_authorization
       )
-      error_message = "Live funds require a byte-pinned, unexpired external authorization manifest whose approved evidence, funds scope, rails, currencies, and single-payment ceiling contain the exact deployment perimeter."
+      error_message = "Live funds require a byte-pinned, unexpired external authorization manifest and byte-pinned authorization evidence bundle whose approved evidence, funds scope, rails, currencies, and single-payment ceiling contain the exact deployment perimeter."
     }
 
     precondition {

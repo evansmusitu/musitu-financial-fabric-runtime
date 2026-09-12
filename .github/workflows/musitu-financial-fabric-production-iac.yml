@@ -47,11 +47,19 @@ jobs:
           PY
           }
 
+          authorization_bundle="$RUNNER_TEMP/authorization-evidence-bundle-ci.bin"
+          printf '%s' 'TEST-ONLY-AUTHORIZATION-EVIDENCE-BUNDLE' > "$authorization_bundle"
+          authorization_bundle_digest="$(sha256sum "$authorization_bundle" | awk '{print $1}')"
+
           manifest="$RUNNER_TEMP/production-authorization-ci.json"
-          cat > "$manifest" <<'JSON'
+          cat > "$manifest" <<JSON
           {
             "funds_scope": "pilot",
             "expires_at": "2099-01-01T00:00:00Z",
+            "evidence_bundle": {
+              "path": "$authorization_bundle",
+              "sha256": "$authorization_bundle_digest"
+            },
             "launch_scope": {
               "rails": ["ecocash"],
               "currencies": ["USD"],
@@ -242,8 +250,8 @@ jobs:
           data['independent_kill_controls']['provider']['independent_of_application'] = False
           json.dump(data, open(target, 'w'), sort_keys=True)
           PY
-          nonindependent_digest="$(sha256sum "$nonindependent" | awk '{print $1}')"
-          if tofu -chdir=infra plan -input=false -lock=false -refresh=false \
+          nonindependent_digest="$(sha256sum "$nonindepent" | awk '{print $1}')"
+          if tofu -chdir=infra plan -input=false -lock=false -refresh=fals`{common[@]} \
             -var='environment=production' \
             -var='production_mode=pilot' \
             -var='live_funds_enabled=true' \
@@ -293,4 +301,12 @@ jobs:
           fi
           assert_log_contains "$RUNNER_TEMP/tampered-evidence-bundle.log" 'byte-pinned target evidence bundle'
 
-          echo 'PASS: IaC fail-closed guards require exact external authorization, target-deployment evidence, and target evidence-bundle integrity'
+          printf '%s' '-TAMPERED' >> "$authorization_bundle"
+          if tofu -chdir=infra plan -input=false -lock=false -refresh=false "${common[@]}" \
+            > "$RUNNER_TEMP/tampered-authorization-bundle.log" 2>&1; then
+            echo 'FAIL: tampered authorization evidence bundle was accepted'
+            exit 1
+          fi
+          assert_log_contains "$RUNNER_TEMP/tampered-authorization-bundle.log" 'byte-pinned authorization evidence bundle'
+
+          echo 'PASS: IaC fail-closed guards require exact external authorization, authorization-evidence bundle integrity, target-deployment evidence, and target-evidence bundle integrity'
