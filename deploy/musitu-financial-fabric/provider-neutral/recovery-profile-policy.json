@@ -1,8 +1,9 @@
 {
-  "schema_version": "mff.recovery-profile-policy.v1",
-  "claim_boundary": "Static recovery-design integrity only. This policy does not classify any additional runtime as stateful, execute a restore/recovery drill, or create target deployment evidence.",
+  "schema_version": "mff.recovery-profile-policy.v2",
+  "claim_boundary": "Static recovery-design integrity only. This policy does not infer persistence classifications, execute a restore/recovery drill, or create target deployment evidence.",
   "authoritative_runtime_base_commit": "80c72d9f711561dd46337d7286ee7bfb2bb5e658",
   "profile_schema_version": "mff.runtime-recovery-profile.v1",
+  "persistence_profile_schema_version": "mff.persistence-profile.v1",
   "scoped_obligations": {
     "postgres": {
       "profile_mode": "backup_restore",
@@ -13,7 +14,20 @@
       "target_evidence_key": "tigerbeetle_recovery"
     }
   },
-  "unclassified_runtime_policy": "No persistence or recovery classification is inferred for the other 24 required runtimes from product names or layers alone.",
+  "resolution_modes": {
+    "scoped_stateful": {
+      "requires_persistence_classification": "stateful",
+      "requires_recovery_design_profile": true
+    },
+    "unscoped_stateless": {
+      "requires_persistence_classification": "stateless",
+      "backup_restore_profile_must_equal_persistence_profile": true
+    },
+    "unscoped_stateful": {
+      "resolution": "blocked_until_explicit_scoped_obligation"
+    }
+  },
+  "unclassified_runtime_policy": "No persistence or recovery classification is inferred for the other 24 required runtimes from product names or layers alone. A non-scoped runtime may resolve backup_restore_profile only after its separately validated persistence profile proves stateless; a stateful non-scoped runtime remains blocked until an explicit recovery obligation is added.",
   "required_design_fields": [
     "rpo_target",
     "rto_target",
@@ -24,5 +38,5 @@
     "integrity_verification_method",
     "failure_scenarios"
   ],
-  "target_execution_rule": "A profile remains design_only_unexecuted and must require separate target execution evidence under the authoritative production deployment evidence manifest."
+  "target_execution_rule": "A scoped stateful recovery profile remains design_only_unexecuted and must require separate target execution evidence under the authoritative production deployment evidence manifest."
 }
