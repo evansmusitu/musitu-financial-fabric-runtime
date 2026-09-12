@@ -101,6 +101,7 @@ jobs:
             },
             "evidence": {
               "dark_deployment": {"status": "passed", "evidence_ref": "TEST-ONLY-DARK"},
+              "required_runtime_health": {"status": "passed", "evidence_ref": "TEST-ONLY-REQUIRED-RUNTIME-HEALTH"},
               "monitoring_alerting": {"status": "passed", "evidence_ref": "TEST-ONLY-MONITORING"},
               "postgres_backup_restore": {"status": "passed", "evidence_ref": "TEST-ONLY-POSTGRES-DR"},
               "tigerbeetle_recovery": {"status": "passed", "evidence_ref": "TEST-ONLY-TIGERBEETLE-DR"},
@@ -284,6 +285,21 @@ jobs:
           fi
           assert_log_contains "$RUNNER_TEMP/nonindependent-kill.log" 'independent network/provider/settlement kill controls'
 
+          missing_runtime_health="$RUNNER_TEMP/production-deployment-missing-runtime-health-ci.json"
+          python - "$deployment" "$missing_runtime_health" <<'PY'
+          import json, sys
+          source, target = sys.argv[1], sys.argv[2]
+          data = json.load(open(source))
+          del data['evidence']['required_runtime_health']
+          json.dump(data, open(target, 'w'), sort_keys=True)
+          PY
+          missing_runtime_health_digest="$(sha256sum "$missing_runtime_health" | awk '{print $1}')"
+          if tofu -chdir=infra plan -input=false -lock=false -refresh=false             -var='environment=production'             -var='production_mode=pilot'             -var='live_funds_enabled=true'             -var="authorization_manifest_path=$manifest"             -var="authorization_manifest_sha256=$digest"             -var="deployment_evidence_manifest_path=$missing_runtime_health"             -var="deployment_evidence_manifest_sha256=$missing_runtime_health_digest"             -var='target_environment_id=test-only-production-target'             -var="release_commit=$release_commit"             -var="release_image_digest=$release_image"             -var='production_enabled_rails=["ecocash"]'             -var='production_enabled_currencies=["USD"]'             -var='max_single_payment_minor=1000'             > "$RUNNER_TEMP/missing-runtime-health.log" 2>&1; then
+            echo 'FAIL: deployment evidence without required runtime health was accepted'
+            exit 1
+          fi
+          assert_log_contains "$RUNNER_TEMP/missing-runtime-health.log" 'executed target-environment drills'
+
           tampered_bundle="$RUNNER_TEMP/target-evidence-bundle-tampered-ci.bin"
           cp "$evidence_bundle" "$tampered_bundle"
           printf '%s' '-TAMPERED' >> "$tampered_bundle"
@@ -324,4 +340,4 @@ jobs:
           fi
           assert_log_contains "$RUNNER_TEMP/tampered-authorization-bundle.log" 'byte-pinned authorization evidence bundle'
 
-          echo 'PASS: IaC fail-closed guards require exact external authorization, authorization-evidence bundle integrity, target-deployment evidence, and target-evidence bundle integrity'
+          echo 'PASS: IaC fail-closed guards require exact external authorization, authorization-evidence bundle integrity, target identity, full required-runtime health evidence, target-deployment evidence, and target-evidence bundle integrity'
