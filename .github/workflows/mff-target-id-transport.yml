@@ -1,0 +1,55 @@
+name: MFF Target Identity Transport
+
+on:
+  push:
+    branches: [musitu-financial-fabric-production-readiness]
+    paths:
+      - '.github/workflows/mff-target-id-transport.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  reconstruct-tested-bytes:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 2
+      - name: Verify authority and carrier identities
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD^)" = 'f2553f436dc54da99a23a8b847949c53b17b582e'
+          test "$(git hash-object .mff-target-id/production_guard.tf.b64)" = 'bbf608a7176b88f484ab7ca15eb3bbf00d1ab602'
+          test "$(git hash-object .mff-target-id/production-iac.yml.b64)" = '0eff6378872534d7f1ea1aff5ede8d9d8fd71390'
+      - name: Reconstruct exact validated files
+        run: |
+          set -euo pipefail
+          base64 -d .mff-target-id/production_guard.tf.b64 > .mff-target-id/pristine-production_guard.tf
+          base64 -d .mff-target-id/production-iac.yml.b64 > .mff-target-id/pristine-production-iac.yml
+          {
+            echo "production_guard_git_blob=$(git hash-object .mff-target-id/pristine-production_guard.tf)"
+            echo "production_iac_git_blob=$(git hash-object .mff-target-id/pristine-production-iac.yml)"
+            echo "production_guard_sha256=$(sha256sum .mff-target-id/pristine-production_guard.tf | awk '{print $1}')"
+            echo "production_iac_sha256=$(sha256sum .mff-target-id/pristine-production-iac.yml | awk '{print $1}')"
+          } > .mff-target-id/pristine-hashes.txt
+      - uses: opentofu/setup-opentofu@9d84900f3238fab8cd84ce47d658d25dd008be2f
+      - name: Validate reconstructed IaC exactly
+        run: |
+          set -euo pipefail
+          cp musitu_financial_fabric/infra/production_guard.tf "$RUNNER_TEMP/original-production_guard.tf"
+          cp .mff-target-id/pristine-production_guard.tf musitu_financial_fabric/infra/production_guard.tf
+          tofu -chdir=musitu_financial_fabric/infra init -backend=false
+          tofu -chdir=musitu_financial_fabric/infra validate
+          cp "$RUNNER_TEMP/original-production_guard.tf" musitu_financial_fabric/infra/production_guard.tf
+      - name: Publish pristine ordinary blobs only
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .mff-target-id/pristine-production_guard.tf .mff-target-id/pristine-production-iac.yml .mff-target-id/pristine-hashes.txt
+          git commit -m 'Stage exact validated target identity transport bytes'
+          git fetch origin musitu-financial-fabric-production-readiness
+          test "$(git rev-parse origin/musitu-financial-fabric-production-readiness)" = "$GITHUB_SHA"
+          git push origin HEAD:musitu-financial-fabric-production-readiness
