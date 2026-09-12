@@ -32,7 +32,9 @@ DEPLOYMENT_FIELDS = (
     "backup_restore_profile",
     "disruption_budget_profile",
     "anti_affinity_profile",
+    "benchmark_evidence_ref",
 )
+REFERENCE_FIELDS = tuple(field for field in DEPLOYMENT_FIELDS if field != "image_digest")
 
 
 def _load(path: Path) -> Any:
@@ -48,6 +50,21 @@ def _required_runtime_map() -> dict[str, str]:
     if any(not key or not env or env == "None" for key, env in mapping.items()):
         raise AssertionError("required runtime inventory has an empty key or health_env")
     return mapping
+
+
+def _repo_file_reference(value: object) -> bool:
+    if not isinstance(value, str) or not value.strip():
+        return False
+    relative = Path(value.strip())
+    if relative.is_absolute():
+        return False
+    root = ROOT.resolve()
+    resolved = (ROOT / relative).resolve()
+    try:
+        resolved.relative_to(root)
+    except ValueError:
+        return False
+    return resolved.is_file()
 
 
 def validate_structure() -> list[str]:
@@ -70,6 +87,21 @@ def validate_structure() -> list[str]:
     for key, expected_env in authoritative.items():
         if contract_map.get(key) != expected_env:
             errors.append(f"{key}: health_env does not match authoritative registry")
+
+    declared_fields = contract.get("required_deployment_fields")
+    if declared_fields != list(DEPLOYMENT_FIELDS):
+        errors.append("contract required deployment fields do not exactly match validator policy")
+    defaults = contract.get("defaults_for_unresolved_fields", {})
+    if not isinstance(defaults, dict):
+        errors.append("contract unresolved defaults are not an object")
+    else:
+        for field in DEPLOYMENT_FIELDS:
+            if field not in defaults:
+                errors.append(f"contract unresolved defaults omit {field}")
+            elif defaults.get(field) is not None:
+                errors.append(f"contract unresolved default for {field} is not null")
+        if defaults.get("benchmark_status") != "unmeasured":
+            errors.append("contract unresolved benchmark default is not unmeasured")
 
     namespace = _load(NAMESPACE)
     labels = namespace.get("metadata", {}).get("labels", {})
@@ -117,10 +149,6 @@ def deployability_blockers() -> list[str]:
 
     contract = _load(CONTRACT)
     defaults = contract.get("defaults_for_unresolved_fields", {})
-    if any(defaults.get(field) is not None for field in DEPLOYMENT_FIELDS):
-        blockers.append("contract unresolved defaults are not null")
-    if defaults.get("benchmark_status") != "unmeasured":
-        blockers.append("contract unresolved benchmark default is not unmeasured")
 
     for row in contract.get("runtimes", []):
         key = str(row.get("key", "unknown"))
@@ -131,6 +159,10 @@ def deployability_blockers() -> list[str]:
         digest = row.get("image_digest", defaults.get("image_digest"))
         if digest not in (None, "") and not OCI_DIGEST.fullmatch(str(digest)):
             blockers.append(f"{key}: image_digest is not immutable sha256")
+        for field in REFERENCE_FIELDS:
+            value = row.get(field, defaults.get(field))
+            if value not in (None, "", [], {}) and not _repo_file_reference(value):
+                blockers.append(f"{key}: {field} is not an existing repository-relative file")
         status = row.get("benchmark_status", defaults.get("benchmark_status"))
         if status != "measured":
             blockers.append(f"{key}: benchmark_status is not measured")
@@ -155,6 +187,7 @@ def main() -> int:
                 print(f"STRUCTURE BLOCKER: {error}")
             return 2
         print("PASS: exact 26-runtime contract and fail-closed provider-neutral foundation are structurally valid")
+        print("PASS: resolved deployment/profile fields must reference existing repository files")
         print("BOUNDARY: static architecture only; no deployment or production authorization is implied")
         return 0
 

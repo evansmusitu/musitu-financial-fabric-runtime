@@ -34,9 +34,15 @@ There are intentionally **no runtime Deployments, StatefulSets, DaemonSets, Jobs
 - backup/restore profile where applicable;
 - PodDisruptionBudget profile;
 - topology/anti-affinity profile;
-- measured benchmark result.
+- measured benchmark result and benchmark evidence reference.
 
 No component is deployable merely because it appears in the inventory.
+
+### Resolved-field encoding
+
+For this staging contract, every resolved manifest, provenance, profile, and benchmark-evidence field is a **repository-relative file reference**. The deployability validator rejects absolute paths, path traversal outside the repository, missing files, arbitrary non-file objects, and placeholder strings. Image identity is separate and must be an exact OCI `sha256:<64-hex>` digest.
+
+A runtime cannot satisfy benchmark deployability by changing `benchmark_status` to `measured` alone; a repository evidence artifact must also be referenced by `benchmark_evidence_ref`. These rules validate evidence structure only. They do not prove that the referenced evidence is externally authoritative or that a target was deployed.
 
 ## Workload identity and secrets boundary
 
@@ -54,7 +60,7 @@ Runtime manifests must define appropriate startup/readiness/liveness probes, dis
 
 ## Resource benchmarking
 
-`resource-benchmark-plan.json` is a measurement protocol, not production sizing. CPU, memory, storage, queue/backlog, and latency values must be measured against a declared load model. Until a component has a measured result, its `benchmark_status` stays `unmeasured` and deployability fails.
+`resource-benchmark-plan.json` is a measurement protocol, not production sizing. CPU, memory, storage, queue/backlog, and latency values must be measured against a declared load model. Until a component has a measured result and repository evidence reference, its `benchmark_status` stays `unmeasured` and deployability fails.
 
 ## Immutable supply-chain boundary
 

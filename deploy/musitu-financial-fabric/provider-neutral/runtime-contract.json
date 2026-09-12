@@ -43,7 +43,8 @@
     "persistence_profile",
     "backup_restore_profile",
     "disruption_budget_profile",
-    "anti_affinity_profile"
+    "anti_affinity_profile",
+    "benchmark_evidence_ref"
   ],
   "defaults_for_unresolved_fields": {
     "manifest_path": null,
@@ -58,6 +59,7 @@
     "backup_restore_profile": null,
     "disruption_budget_profile": null,
     "anti_affinity_profile": null,
+    "benchmark_evidence_ref": null,
     "benchmark_status": "unmeasured"
   }
 }
