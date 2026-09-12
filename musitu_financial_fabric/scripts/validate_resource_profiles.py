@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import re
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -15,6 +16,7 @@ POLICY = TARGET / "resource-profile-policy.json"
 BENCHMARK_PLAN = TARGET / "resource-benchmark-plan.json"
 SELF_TEST_EVIDENCE = TARGET / ".validation" / "resource-profile-self-test-evidence.txt"
 EXPECTED_BASE_COMMIT = "80c72d9f711561dd46337d7286ee7bfb2bb5e658"
+BENCHMARK_SEMANTIC_PROFILE = "mff.benchmark-semantic-profile.v1"
 OCI_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
 QUANTITY_RE = re.compile(
@@ -48,6 +50,18 @@ def _load(path: Path) -> Any:
 
 def _nonempty(value: object) -> bool:
     return value not in (None, "", [], {})
+
+
+def _number(value: object) -> Decimal | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    try:
+        parsed = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return None
+    return parsed if parsed.is_finite() else None
 
 
 def _repo_file(value: object) -> Path | None:
@@ -100,9 +114,25 @@ def _quantity_policy_errors(policy: dict[str, Any]) -> list[str]:
         "requests_must_not_exceed_limits": True,
         "maximum_magnitude": str(2**63 - 1),
     }
-    actual = policy.get("compute_quantity_policy")
-    if actual != expected:
+    if policy.get("compute_quantity_policy") != expected:
         return ["resource profile compute_quantity_policy is invalid"]
+    return []
+
+
+def _headroom_policy_errors(policy: dict[str, Any]) -> list[str]:
+    expected = {
+        "basis_percentile": "p95",
+        "cpu_measurement": "cpu_p95",
+        "cpu_measurement_unit": "cores",
+        "memory_measurement": "memory_rss_p95",
+        "memory_measurement_unit": "bytes",
+        "ratios_must_be_non_negative": True,
+        "limits_must_cover_measurement_plus_headroom": True,
+    }
+    if policy.get("headroom_policy") != expected:
+        return ["resource profile headroom_policy is invalid"]
+    if policy.get("required_headroom_fields") != ["basis_percentile", "cpu_ratio", "memory_ratio"]:
+        return ["resource profile required_headroom_fields are invalid"]
     return []
 
 
@@ -110,7 +140,7 @@ def _policy_errors(policy: object) -> list[str]:
     errors: list[str] = []
     if not isinstance(policy, dict):
         return ["resource profile policy root must be an object"]
-    if policy.get("schema_version") != "mff.resource-profile-policy.v2":
+    if policy.get("schema_version") != "mff.resource-profile-policy.v3":
         errors.append("resource profile policy schema_version is invalid")
     if policy.get("authoritative_runtime_base_commit") != EXPECTED_BASE_COMMIT:
         errors.append("resource profile policy is not anchored to the sealed runtime release")
@@ -118,6 +148,8 @@ def _policy_errors(policy: object) -> list[str]:
         errors.append("resource profile policy benchmark plan schema is invalid")
     if policy.get("benchmark_evidence_schema_version") != "mff.runtime-benchmark-evidence.v1":
         errors.append("resource profile policy benchmark evidence schema is invalid")
+    if policy.get("benchmark_semantic_profile_version") != BENCHMARK_SEMANTIC_PROFILE:
+        errors.append("resource profile benchmark semantic profile is invalid")
     if policy.get("profile_schema_version") != "mff.resource-profile.v1":
         errors.append("resource profile schema is invalid")
     if policy.get("benchmark_status_required_for_resolution") != "measured":
@@ -128,8 +160,8 @@ def _policy_errors(policy: object) -> list[str]:
         values = policy.get(field)
         if not isinstance(values, list) or not values or any(not isinstance(item, str) or not item for item in values):
             errors.append(f"resource profile policy {field} is invalid")
-    if isinstance(policy, dict):
-        errors.extend(_quantity_policy_errors(policy))
+    errors.extend(_quantity_policy_errors(policy))
+    errors.extend(_headroom_policy_errors(policy))
     return errors
 
 
@@ -142,6 +174,8 @@ def _benchmark_plan_errors(policy: dict[str, Any]) -> list[str]:
         errors.append("resource benchmark plan does not require measured status")
     if plan.get("benchmark_evidence_schema_version") != policy.get("benchmark_evidence_schema_version"):
         errors.append("resource benchmark evidence schema does not match resource profile policy")
+    if plan.get("benchmark_semantic_profile_version") != policy.get("benchmark_semantic_profile_version"):
+        errors.append("resource benchmark semantic profile does not match resource profile policy")
     return errors
 
 
@@ -183,7 +217,9 @@ def _quantity_value(value: object, *, resource: str) -> tuple[Decimal | None, st
     return base_value, None
 
 
-def _compute_errors(payload: dict[str, Any], policy: dict[str, Any]) -> list[str]:
+def _compute_values(
+    payload: dict[str, Any], policy: dict[str, Any]
+) -> tuple[list[str], dict[tuple[str, str], Decimal]]:
     errors: list[str] = []
     parsed: dict[tuple[str, str], Decimal] = {}
     for block_name in ("requests", "limits"):
@@ -204,7 +240,7 @@ def _compute_errors(payload: dict[str, Any], policy: dict[str, Any]) -> list[str
             limit = parsed.get(("limits", field))
             if request is not None and limit is not None and request > limit:
                 errors.append(f"resource profile requests.{field} must not exceed limits.{field}")
-    return errors
+    return errors, parsed
 
 
 def _benchmark_binding_errors(
@@ -213,7 +249,7 @@ def _benchmark_binding_errors(
     profile: dict[str, Any],
     policy: dict[str, Any],
     benchmark_payload: object | None = None,
-) -> list[str]:
+) -> tuple[list[str], object | None]:
     errors: list[str] = []
     if row.get("benchmark_status") != policy.get("benchmark_status_required_for_resolution"):
         errors.append("contract row benchmark_status is not measured")
@@ -224,14 +260,14 @@ def _benchmark_binding_errors(
         path = _repo_file(benchmark_ref)
         if path is None:
             errors.append("benchmark_evidence_ref must reference an existing repository file")
-            return errors
+            return errors, None
         try:
             benchmark_payload = _load(path)
         except Exception as exc:
             errors.append(f"benchmark evidence is unreadable or invalid JSON ({type(exc).__name__})")
-            return errors
+            return errors, None
     if not isinstance(benchmark_payload, dict):
-        return errors + ["benchmark evidence root must be an object"]
+        return errors + ["benchmark evidence root must be an object"], benchmark_payload
     if benchmark_payload.get("schema_version") != policy.get("benchmark_evidence_schema_version"):
         errors.append("benchmark evidence schema_version is invalid")
     if benchmark_payload.get("runtime_key") != key:
@@ -244,6 +280,82 @@ def _benchmark_binding_errors(
         errors.append("benchmark evidence environment_id does not match resource profile")
     if benchmark_payload.get("resource_profile") != row.get("resource_profile"):
         errors.append("benchmark evidence resource_profile does not match contract row")
+    return errors, benchmark_payload
+
+
+def _headroom_errors(
+    basis: object,
+    benchmark_payload: object,
+    compute_values: dict[tuple[str, str], Decimal],
+    policy: dict[str, Any],
+) -> list[str]:
+    errors: list[str] = []
+    if not isinstance(basis, dict):
+        return errors
+    headroom = basis.get("headroom")
+    if not isinstance(headroom, dict):
+        return ["resource profile sizing_basis.headroom must be an object"]
+    for field in policy.get("required_headroom_fields", []):
+        if field not in headroom:
+            errors.append(f"resource profile sizing_basis.headroom missing {field}")
+    expected_percentile = policy.get("headroom_policy", {}).get("basis_percentile")
+    if headroom.get("basis_percentile") != expected_percentile:
+        errors.append(f"resource profile sizing_basis.headroom.basis_percentile must be {expected_percentile}")
+
+    ratios: dict[str, Decimal] = {}
+    for name in ("cpu_ratio", "memory_ratio"):
+        value = _number(headroom.get(name))
+        if value is None:
+            errors.append(f"resource profile sizing_basis.headroom.{name} must be a finite JSON number")
+        elif value < 0:
+            errors.append(f"resource profile sizing_basis.headroom.{name} must be non-negative")
+        else:
+            ratios[name] = value
+
+    if not isinstance(benchmark_payload, dict):
+        errors.append("resource profile cannot bind headroom without benchmark evidence object")
+        return errors
+    measurements = benchmark_payload.get("measurements")
+    if not isinstance(measurements, dict):
+        errors.append("benchmark evidence measurements must be an object for headroom binding")
+        return errors
+
+    headroom_policy = policy.get("headroom_policy", {})
+    specifications = (
+        (
+            "cpu",
+            str(headroom_policy.get("cpu_measurement", "")),
+            str(headroom_policy.get("cpu_measurement_unit", "")),
+            "cpu_ratio",
+        ),
+        (
+            "memory",
+            str(headroom_policy.get("memory_measurement", "")),
+            str(headroom_policy.get("memory_measurement_unit", "")),
+            "memory_ratio",
+        ),
+    )
+    for resource, measurement_name, expected_unit, ratio_name in specifications:
+        metric = measurements.get(measurement_name)
+        if not isinstance(metric, dict):
+            errors.append(f"benchmark evidence missing structured {measurement_name} for headroom binding")
+            continue
+        measured = _number(metric.get("value"))
+        if measured is None or measured < 0:
+            errors.append(f"benchmark evidence {measurement_name}.value must be a non-negative finite number")
+            continue
+        if metric.get("unit") != expected_unit:
+            errors.append(f"benchmark evidence {measurement_name}.unit must be {expected_unit}")
+            continue
+        ratio = ratios.get(ratio_name)
+        limit = compute_values.get(("limits", resource))
+        if ratio is None or limit is None:
+            continue
+        required_limit = measured * (Decimal(1) + ratio)
+        if limit < required_limit:
+            errors.append(
+                f"resource profile limits.{resource} does not cover {measurement_name} plus declared headroom"
+            )
     return errors
 
 
@@ -275,7 +387,8 @@ def _profile_errors(
     if not isinstance(environment, str) or not environment.strip():
         errors.append("resource profile environment_id is missing")
 
-    errors.extend(_compute_errors(payload, policy))
+    compute_errors, parsed_compute = _compute_values(payload, policy)
+    errors.extend(compute_errors)
 
     basis = payload.get("sizing_basis")
     if not isinstance(basis, dict):
@@ -288,12 +401,14 @@ def _profile_errors(
             errors.append("resource profile must be selected from retained measurements")
         if basis.get("failure_recovery_considered") is not True:
             errors.append("resource profile must document failure/recovery consideration")
-        if not _nonempty(basis.get("headroom")):
-            errors.append("resource profile sizing_basis.headroom is missing")
         if not isinstance(basis.get("rationale"), str) or not basis["rationale"].strip():
             errors.append("resource profile sizing_basis.rationale is missing")
 
-    errors.extend(_benchmark_binding_errors(key, row, payload, policy, benchmark_payload))
+    binding_errors, bound_benchmark = _benchmark_binding_errors(
+        key, row, payload, policy, benchmark_payload
+    )
+    errors.extend(binding_errors)
+    errors.extend(_headroom_errors(basis, bound_benchmark, parsed_compute, policy))
     errors.extend(_evidence_errors(payload.get("target_validation"), label="target_validation"))
     return errors
 
@@ -321,6 +436,10 @@ def _self_test() -> list[str]:
         "image_digest": digest,
         "environment_id": "self-test-target",
         "resource_profile": resource_ref,
+        "measurements": {
+            "cpu_p95": {"value": 0.6, "unit": "cores"},
+            "memory_rss_p95": {"value": 700000000, "unit": "bytes"},
+        },
     }
     profile = {
         "schema_version": "mff.resource-profile.v1",
@@ -333,7 +452,11 @@ def _self_test() -> list[str]:
         "limits": {"cpu": "1", "memory": "1Gi"},
         "sizing_basis": {
             "selected_from_measurements": True,
-            "headroom": {"source": "synthetic-self-test"},
+            "headroom": {
+                "basis_percentile": "p95",
+                "cpu_ratio": 0.25,
+                "memory_ratio": 0.25,
+            },
             "failure_recovery_considered": True,
             "rationale": "synthetic self-test only",
         },
@@ -398,11 +521,46 @@ def _self_test() -> list[str]:
         failures.append("resource profile self-test failed to reject memory request above limit")
 
     candidate = json.loads(json.dumps(profile))
+    candidate["sizing_basis"]["headroom"] = {"source": "placeholder"}
+    if not _profile_errors("self-test", row, candidate, policy, benchmark):
+        failures.append("resource profile self-test failed to reject placeholder headroom")
+
+    candidate = json.loads(json.dumps(profile))
+    candidate["sizing_basis"]["headroom"]["basis_percentile"] = "p99"
+    if not _profile_errors("self-test", row, candidate, policy, benchmark):
+        failures.append("resource profile self-test failed to reject wrong headroom percentile basis")
+
+    candidate = json.loads(json.dumps(profile))
+    candidate["sizing_basis"]["headroom"]["cpu_ratio"] = -0.1
+    if not _profile_errors("self-test", row, candidate, policy, benchmark):
+        failures.append("resource profile self-test failed to reject negative CPU headroom")
+
+    candidate = json.loads(json.dumps(profile))
+    candidate["limits"]["cpu"] = "700m"
+    if not _profile_errors("self-test", row, candidate, policy, benchmark):
+        failures.append("resource profile self-test failed to reject CPU limit below p95 plus headroom")
+
+    candidate = json.loads(json.dumps(profile))
+    candidate["limits"]["memory"] = "800Mi"
+    if not _profile_errors("self-test", row, candidate, policy, benchmark):
+        failures.append("resource profile self-test failed to reject memory limit below p95 plus headroom")
+
+    bad_benchmark = json.loads(json.dumps(benchmark))
+    bad_benchmark["measurements"]["cpu_p95"]["unit"] = "millicores"
+    if not _profile_errors("self-test", row, profile, policy, bad_benchmark):
+        failures.append("resource profile self-test failed to reject benchmark CPU unit drift")
+
+    bad_benchmark = json.loads(json.dumps(benchmark))
+    del bad_benchmark["measurements"]["memory_rss_p95"]
+    if not _profile_errors("self-test", row, profile, policy, bad_benchmark):
+        failures.append("resource profile self-test failed to reject missing benchmark memory p95")
+
+    candidate = json.loads(json.dumps(profile))
     candidate["target_validation"]["evidence_sha256"] = "0" * 64
     if not _profile_errors("self-test", row, candidate, policy, benchmark):
         failures.append("resource profile self-test failed to reject target evidence hash mismatch")
 
-    bad_benchmark = dict(benchmark)
+    bad_benchmark = json.loads(json.dumps(benchmark))
     bad_benchmark["environment_id"] = "wrong-target"
     if not _profile_errors("self-test", row, profile, policy, bad_benchmark):
         failures.append("resource profile self-test failed to reject benchmark environment drift")
@@ -460,7 +618,8 @@ def main() -> int:
         print(
             "PASS: resource profile validator rejects unmeasured sizing, benchmark drift, "
             "invalid Kubernetes CPU/memory quantities, request-over-limit assignments, "
-            "incomplete compute assignments, and unbound target evidence"
+            "unbound or mathematically insufficient p95 headroom, incomplete compute assignments, "
+            "and unbound target evidence"
         )
         return 0
     errors, resolved, unresolved = _contract_errors()

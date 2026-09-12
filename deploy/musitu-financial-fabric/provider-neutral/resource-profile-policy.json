@@ -1,10 +1,11 @@
 {
-  "schema_version": "mff.resource-profile-policy.v2",
+  "schema_version": "mff.resource-profile-policy.v3",
   "authoritative_runtime_base_commit": "80c72d9f711561dd46337d7286ee7bfb2bb5e658",
   "benchmark_plan_schema_version": "mff.resource-benchmark-plan.v1",
   "benchmark_evidence_schema_version": "mff.runtime-benchmark-evidence.v1",
+  "benchmark_semantic_profile_version": "mff.benchmark-semantic-profile.v1",
   "profile_schema_version": "mff.resource-profile.v1",
-  "claim_boundary": "Static evidence policy only. It constrains Kubernetes CPU/memory quantity semantics but does not select CPU/memory values, prove a benchmark, establish production sizing, deploy a workload, or authorize production.",
+  "claim_boundary": "Static evidence policy only. It constrains Kubernetes CPU/memory quantities and benchmark-derived p95 headroom but does not select production values, prove a benchmark, deploy a workload, or authorize production.",
   "benchmark_status_required_for_resolution": "measured",
   "required_fields": [
     "runtime_key",
@@ -27,6 +28,11 @@
     "failure_recovery_considered",
     "rationale"
   ],
+  "required_headroom_fields": [
+    "basis_percentile",
+    "cpu_ratio",
+    "memory_ratio"
+  ],
   "compute_quantity_policy": {
     "grammar": "kubernetes_quantity",
     "positive_for_resolution": true,
@@ -35,6 +41,15 @@
     "memory_base_unit": "byte",
     "requests_must_not_exceed_limits": true,
     "maximum_magnitude": "9223372036854775807"
+  },
+  "headroom_policy": {
+    "basis_percentile": "p95",
+    "cpu_measurement": "cpu_p95",
+    "cpu_measurement_unit": "cores",
+    "memory_measurement": "memory_rss_p95",
+    "memory_measurement_unit": "bytes",
+    "ratios_must_be_non_negative": true,
+    "limits_must_cover_measurement_plus_headroom": true
   },
   "target_validation_status_required_for_resolution": "passed"
 }
