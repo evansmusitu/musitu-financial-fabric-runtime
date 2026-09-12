@@ -1,7 +1,8 @@
 {
-  "schema_version": "mff.benchmark-evidence-policy.v1",
-  "claim_boundary": "Internal static evidence-integrity policy only; it does not create target measurements, deployment evidence, or production authorization.",
+  "schema_version": "mff.benchmark-evidence-policy.v2",
+  "claim_boundary": "Internal static evidence-integrity policy only; structured load/measurement validation does not create target measurements, deployment evidence, or production authorization.",
   "benchmark_evidence_schema_version": "mff.runtime-benchmark-evidence.v1",
+  "benchmark_semantic_profile_version": "mff.benchmark-semantic-profile.v1",
   "authoritative_runtime_base_commit": "80c72d9f711561dd46337d7286ee7bfb2bb5e658",
   "required_bindings": [
     "runtime_key",
@@ -15,5 +16,35 @@
     "raw_evidence_ref",
     "raw_evidence_sha256"
   ],
+  "canonical_units": {
+    "request_or_message_rate": "per_second",
+    "concurrency": "in_flight",
+    "payload_size": "bytes",
+    "dataset_or_state_size": "bytes",
+    "test_duration": "seconds",
+    "cpu": "cores",
+    "memory_rss": "bytes",
+    "latency": "milliseconds",
+    "error_rate": "ratio",
+    "restart_recovery_time": "seconds",
+    "queue_or_backlog_depth": "items",
+    "storage_iops": "operations_per_second",
+    "storage_latency": "milliseconds"
+  },
+  "semantic_rules": {
+    "positive_rate": true,
+    "positive_concurrency": true,
+    "positive_test_duration": true,
+    "failure_or_restart_scenario_must_be_performed": true,
+    "percentile_ordering_required": true,
+    "percentile_sample_counts_must_match_within_series": true,
+    "error_rate_ratio_min": 0,
+    "error_rate_ratio_max": 1,
+    "applicability_statuses": [
+      "measured",
+      "not_applicable"
+    ],
+    "not_applicable_requires_rationale": true
+  },
   "raw_evidence_rule": "raw_evidence_ref must be an existing repository-relative file and raw_evidence_sha256 must equal the SHA-256 of its exact bytes"
 }

@@ -3,6 +3,7 @@
   "claim_boundary": "Measurement protocol only; no envelope is production sizing and no runtime has earned a resource assignment yet.",
   "benchmark_status_required_for_deployability": "measured",
   "benchmark_evidence_schema_version": "mff.runtime-benchmark-evidence.v1",
+  "benchmark_semantic_profile_version": "mff.benchmark-semantic-profile.v1",
   "candidate_test_envelopes": [
     {
       "name": "small-test-envelope",
@@ -62,5 +63,6 @@
     "measurement_toolchain",
     "raw_evidence_sha256"
   ],
-  "acceptance_rule": "A component resource profile may be selected only from retained measurements under a declared load model, with headroom and failure/recovery behavior documented. A measured result must use the mff.runtime-benchmark-evidence.v1 schema and bind the exact runtime key, sealed runtime release, immutable image digest, manifest, resource profile, target environment, offset-aware execution time, measurement toolchain, complete load model, complete required measurement set, and SHA-256 of retained raw evidence."
+  "semantic_acceptance_rule": "Measured benchmark evidence must use mff.benchmark-semantic-profile.v1 structured load and measurement objects with canonical units, percentile/sample consistency, explicit applicability, failure/restart execution evidence, internally consistent error-rate arithmetic, and byte-bound raw evidence.",
+  "acceptance_rule": "A component resource profile may be selected only from retained measurements under a declared load model, with headroom and failure/recovery behavior documented. A measured result must use the mff.runtime-benchmark-evidence.v1 schema under mff.benchmark-semantic-profile.v1 and bind the exact runtime key, sealed runtime release, immutable image digest, manifest, resource profile, target environment, offset-aware execution time, measurement toolchain, semantically structured load model, semantically structured required measurement set, and SHA-256 of retained raw evidence."
 }
