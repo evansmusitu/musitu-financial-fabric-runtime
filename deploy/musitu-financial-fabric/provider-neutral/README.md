@@ -19,6 +19,8 @@ The Kustomize foundation contains only:
 
 There are intentionally **no runtime Deployments, StatefulSets, DaemonSets, Jobs, Services, Ingresses/Gateways, PVCs, Secrets, ConfigMaps containing credentials, or cloud resources** here. The zero-pod quota means this foundation cannot admit workloads even if someone applies it accidentally.
 
+The structural validator pins the contract to the sealed runtime release above and requires `kustomization.yaml` to preserve exactly the namespace, default-deny policy, and zero-workload quota. Removing any of those controls makes structural validation fail.
+
 ## Exact runtime contract
 
 `runtime-contract.json` enumerates all 26 required runtime components and their authoritative health-variable mapping. Every deployment-specific field remains unresolved until it has real evidence:
@@ -61,6 +63,8 @@ Runtime manifests must define appropriate startup/readiness/liveness probes, dis
 ## Resource benchmarking
 
 `resource-benchmark-plan.json` is a measurement protocol, not production sizing. CPU, memory, storage, queue/backlog, and latency values must be measured against a declared load model. Until a component has a measured result and repository evidence reference, its `benchmark_status` stays `unmeasured` and deployability fails.
+
+A future measured result must use schema `mff.runtime-benchmark-evidence.v1`. Its evidence file must bind the exact runtime key, sealed runtime release, immutable image digest, manifest path, resource profile, target environment ID, offset-aware execution timestamp, non-empty measurement toolchain, complete required load model, complete required measurement set, and SHA-256 of retained raw evidence. The validator contains a self-test that proves drift and incomplete evidence are rejected. No current runtime has earned `measured` status.
 
 ## Immutable supply-chain boundary
 

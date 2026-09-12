@@ -2,6 +2,7 @@
   "schema_version": "mff.resource-benchmark-plan.v1",
   "claim_boundary": "Measurement protocol only; no envelope is production sizing and no runtime has earned a resource assignment yet.",
   "benchmark_status_required_for_deployability": "measured",
+  "benchmark_evidence_schema_version": "mff.runtime-benchmark-evidence.v1",
   "candidate_test_envelopes": [
     {
       "name": "small-test-envelope",
@@ -50,5 +51,16 @@
     "queue_or_backlog_depth_where_applicable",
     "storage_iops_and_latency_where_applicable"
   ],
-  "acceptance_rule": "A component resource profile may be selected only from retained measurements under a declared load model, with headroom and failure/recovery behavior documented."
+  "required_evidence_bindings": [
+    "runtime_key",
+    "authoritative_runtime_base_commit",
+    "image_digest",
+    "manifest_path",
+    "resource_profile",
+    "environment_id",
+    "executed_at",
+    "measurement_toolchain",
+    "raw_evidence_sha256"
+  ],
+  "acceptance_rule": "A component resource profile may be selected only from retained measurements under a declared load model, with headroom and failure/recovery behavior documented. A measured result must use the mff.runtime-benchmark-evidence.v1 schema and bind the exact runtime key, sealed runtime release, immutable image digest, manifest, resource profile, target environment, offset-aware execution time, measurement toolchain, complete load model, complete required measurement set, and SHA-256 of retained raw evidence."
 }
