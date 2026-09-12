@@ -22,6 +22,9 @@ EXPECTED_PROFILE_FIELDS = (
 )
 OCI_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
+PDB_PERCENT = re.compile(r"^(?:0|[1-9][0-9]?|100)%$")
+NAMED_PORT = re.compile(r"^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$")
+INT32_MAX = (1 << 31) - 1
 
 
 def _load(path: Path) -> Any:
@@ -138,6 +141,47 @@ def _probe_errors(key: str, row: dict[str, Any], payload: object, policy: dict[s
     return errors
 
 
+def _valid_network_port(value: object) -> bool:
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        return 1 <= value <= 65535
+    if not isinstance(value, str):
+        return False
+    name = value.strip()
+    return (
+        1 <= len(name) <= 15
+        and bool(NAMED_PORT.fullmatch(name))
+        and any(char.isalpha() for char in name)
+    )
+
+
+def _network_port_errors(direction: str, rule_index: int, ports: object, section: dict[str, Any]) -> list[str]:
+    prefix = f"{direction}_allow_rules[{rule_index}].ports"
+    if not isinstance(ports, list) or not ports:
+        return [f"{prefix} must be a non-empty array so the rule cannot match all ports"]
+    errors: list[str] = []
+    allowed_protocols = set(section.get("allowed_protocols", []))
+    for index, item in enumerate(ports):
+        item_prefix = f"{prefix}[{index}]"
+        if not isinstance(item, dict):
+            errors.append(f"{item_prefix} must be an object")
+            continue
+        if "port" not in item or not _valid_network_port(item.get("port")):
+            errors.append(f"{item_prefix}.port must be an explicit numeric port 1-65535 or valid named port")
+        protocol = item.get("protocol", "TCP")
+        if protocol not in allowed_protocols:
+            errors.append(f"{item_prefix}.protocol must be one of {sorted(allowed_protocols)}")
+        if "end_port" in item:
+            start = item.get("port")
+            end = item.get("end_port")
+            if isinstance(start, bool) or not isinstance(start, int):
+                errors.append(f"{item_prefix}.end_port is only valid with a numeric port")
+            elif isinstance(end, bool) or not isinstance(end, int) or not (start <= end <= 65535):
+                errors.append(f"{item_prefix}.end_port must be an integer from port through 65535")
+    return errors
+
+
 def _allow_rule_errors(direction: str, rules: object, section: dict[str, Any]) -> list[str]:
     errors: list[str] = []
     if not isinstance(rules, list):
@@ -151,8 +195,7 @@ def _allow_rule_errors(direction: str, rules: object, section: dict[str, Any]) -
                 errors.append(f"{direction}_allow_rules[{index}] missing {field}")
         if not _nonempty(rule.get("peer")):
             errors.append(f"{direction}_allow_rules[{index}].peer is empty")
-        if "ports" in rule and not isinstance(rule.get("ports"), list):
-            errors.append(f"{direction}_allow_rules[{index}].ports must be an array")
+        errors.extend(_network_port_errors(direction, index, rule.get("ports"), section))
         if not isinstance(rule.get("rationale"), str) or not rule["rationale"].strip():
             errors.append(f"{direction}_allow_rules[{index}].rationale is empty")
     return errors
@@ -173,6 +216,14 @@ def _network_errors(key: str, row: dict[str, Any], payload: object, policy: dict
     if not isinstance(dns_policy, dict) or not dns_policy:
         errors.append("network profile dns_policy must be a non-empty object")
     return errors
+
+
+def _valid_pdb_budget_value(value: object) -> bool:
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        return 0 <= value <= INT32_MAX
+    return isinstance(value, str) and bool(PDB_PERCENT.fullmatch(value.strip()))
 
 
 def _disruption_errors(key: str, row: dict[str, Any], payload: object, policy: dict[str, Any]) -> list[str]:
@@ -202,6 +253,10 @@ def _disruption_errors(key: str, row: dict[str, Any], payload: object, policy: d
             ]
             if len(populated) != 1:
                 errors.append("configured disruption budget must set exactly one of min_available or max_unavailable")
+            elif not _valid_pdb_budget_value(budget.get(populated[0])):
+                errors.append(
+                    f"configured disruption budget {populated[0]} must be a non-negative int32 or percentage from 0% through 100%"
+                )
     elif status == "not_applicable":
         for field in section.get("not_applicable_required_fields", []):
             if not _nonempty(payload.get(field)):
@@ -271,6 +326,13 @@ def _policy_errors(policy: object) -> list[str]:
     network = profiles["network_profile"]
     if network.get("default_deny_inherited_required") is not True:
         errors.append("network profile policy does not require inherited default-deny")
+    if network.get("explicit_nonempty_ports_required_per_allow_rule") is not True:
+        errors.append("network profile policy must forbid implicit all-port allow rules")
+    if set(network.get("allowed_protocols") or []) != {"TCP", "UDP", "SCTP"}:
+        errors.append("network profile policy protocol set is invalid")
+    disruption = profiles["disruption_budget_profile"]
+    if disruption.get("budget_value_semantics") != "non_negative_int32_or_percentage_0_100":
+        errors.append("disruption budget policy value semantics are invalid")
     return errors
 
 
@@ -314,7 +376,13 @@ def _self_test() -> list[str]:
             "schema_version": "mff.network-profile.v1",
             "default_deny_inherited": True,
             "ingress_allow_rules": [],
-            "egress_allow_rules": [],
+            "egress_allow_rules": [
+                {
+                    "peer": {"kind": "self-test"},
+                    "ports": [{"port": 443, "protocol": "TCP"}],
+                    "rationale": "self-test",
+                }
+            ],
             "dns_policy": {"mode": "self-test"},
         },
         "disruption_budget_profile": {
@@ -322,7 +390,7 @@ def _self_test() -> list[str]:
             "schema_version": "mff.disruption-budget-profile.v1",
             "status": "configured",
             "selector": {"source": "self-test"},
-            "budget": {"min_available": "self-test"},
+            "budget": {"min_available": "50%"},
             "eviction_semantics": "self-test",
             "rationale": "self-test",
         },
@@ -383,14 +451,40 @@ def _self_test() -> list[str]:
         failures.append("network self-test failed to reject default-deny removal")
 
     bad_network_rule = json.loads(json.dumps(payloads["network_profile"]))
-    bad_network_rule["egress_allow_rules"] = [{"peer": {"kind": "self-test"}, "ports": []}]
+    bad_network_rule["egress_allow_rules"] = [
+        {"peer": {"kind": "self-test"}, "ports": [], "rationale": "self-test"}
+    ]
     if not _network_errors("self-test", row, bad_network_rule, policy):
-        failures.append("network self-test failed to reject allow rule without rationale")
+        failures.append("network self-test failed to reject implicit all-port allow rule")
+
+    bad_network_port = json.loads(json.dumps(payloads["network_profile"]))
+    bad_network_port["egress_allow_rules"] = [
+        {"peer": {"kind": "self-test"}, "ports": [{"protocol": "TCP"}], "rationale": "self-test"}
+    ]
+    if not _network_errors("self-test", row, bad_network_port, policy):
+        failures.append("network self-test failed to require an explicit port in every allow entry")
+
+    bad_network_protocol = json.loads(json.dumps(payloads["network_profile"]))
+    bad_network_protocol["egress_allow_rules"] = [
+        {"peer": {"kind": "self-test"}, "ports": [{"port": 443, "protocol": "ANY"}], "rationale": "self-test"}
+    ]
+    if not _network_errors("self-test", row, bad_network_protocol, policy):
+        failures.append("network self-test failed to reject unsupported network protocol")
 
     bad_disruption = json.loads(json.dumps(payloads["disruption_budget_profile"]))
-    bad_disruption["budget"] = {"min_available": "1", "max_unavailable": "1"}
+    bad_disruption["budget"] = {"min_available": 1, "max_unavailable": 1}
     if not _disruption_errors("self-test", row, bad_disruption, policy):
         failures.append("disruption self-test failed to reject ambiguous budget")
+
+    bad_disruption_value = json.loads(json.dumps(payloads["disruption_budget_profile"]))
+    bad_disruption_value["budget"] = {"min_available": "self-test"}
+    if not _disruption_errors("self-test", row, bad_disruption_value, policy):
+        failures.append("disruption self-test failed to reject invalid budget value")
+
+    bad_disruption_percentage = json.loads(json.dumps(payloads["disruption_budget_profile"]))
+    bad_disruption_percentage["budget"] = {"max_unavailable": "101%"}
+    if not _disruption_errors("self-test", row, bad_disruption_percentage, policy):
+        failures.append("disruption self-test failed to reject out-of-range percentage")
 
     bad_anti = json.loads(json.dumps(payloads["anti_affinity_profile"]))
     bad_anti["topology_keys"] = []
@@ -453,7 +547,7 @@ def main() -> int:
             for failure in failures:
                 print(f"SELF-TEST FAILURE: {failure}")
             return 4
-        print("PASS: operational profile validator rejects drift, default-deny removal, incomplete probes, ambiguous disruption budgets, and unbound target evidence")
+        print("PASS: operational profile validator rejects drift, default-deny removal, implicit all-port rules, invalid disruption budgets, incomplete probes, and unbound target evidence")
         return 0
 
     errors, counts = _contract_errors()

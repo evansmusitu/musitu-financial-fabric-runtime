@@ -43,6 +43,12 @@
         "target_validation"
       ],
       "default_deny_inherited_required": true,
+      "explicit_nonempty_ports_required_per_allow_rule": true,
+      "allowed_protocols": [
+        "TCP",
+        "UDP",
+        "SCTP"
+      ],
       "allow_rule_required_fields": [
         "peer",
         "ports",
@@ -70,6 +76,7 @@
         "eviction_semantics",
         "rationale"
       ],
+      "budget_value_semantics": "non_negative_int32_or_percentage_0_100",
       "not_applicable_required_fields": [
         "rationale"
       ],
