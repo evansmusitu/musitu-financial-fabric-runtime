@@ -122,6 +122,16 @@ class Settings:
     max_single_payment_minor: int = field(default_factory=lambda: int(_str("MUSITU_MAX_SINGLE_PAYMENT_MINOR", "1000000")))
 
     def __post_init__(self) -> None:
+        invalid_currency = next(
+            (
+                code
+                for code in self.production_enabled_currencies
+                if len(code) != 3 or not code.isascii() or not code.isalpha() or code != code.upper()
+            ),
+            None,
+        )
+        if invalid_currency is not None:
+            raise ValueError("production currencies must use uppercase ASCII three-letter codes")
         if self.uses_postgres:
             if not 1 <= self.metadata_db_connect_timeout_seconds <= 30:
                 raise ValueError("PostgreSQL connect timeout must be between 1 and 30 seconds")
