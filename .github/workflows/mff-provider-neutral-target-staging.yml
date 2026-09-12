@@ -10,6 +10,7 @@ on:
       - 'musitu_financial_fabric/scripts/validate_benchmark_evidence.py'
       - 'musitu_financial_fabric/scripts/validate_recovery_profiles.py'
       - 'musitu_financial_fabric/scripts/validate_identity_secret_profiles.py'
+      - 'musitu_financial_fabric/scripts/validate_identity_secret_target_evidence.py'
       - 'musitu_financial_fabric/scripts/validate_operational_profiles.py'
       - 'musitu_financial_fabric/scripts/validate_supply_persistence_profiles.py'
       - 'musitu_financial_fabric/scripts/validate_persistence_target_evidence.py'
@@ -57,6 +58,12 @@ jobs:
 
       - name: Validate resolved workload identity and secret profiles
         run: python musitu_financial_fabric/scripts/validate_identity_secret_profiles.py --contract
+
+      - name: Exercise workload identity and secret target-evidence association gate
+        run: python musitu_financial_fabric/scripts/validate_identity_secret_target_evidence.py --self-test
+
+      - name: Validate resolved workload identity and secret target-evidence descriptors
+        run: python musitu_financial_fabric/scripts/validate_identity_secret_target_evidence.py --contract
 
       - name: Exercise probe, network, disruption, and topology profile integrity gate
         run: python musitu_financial_fabric/scripts/validate_operational_profiles.py --self-test

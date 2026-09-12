@@ -17,6 +17,7 @@ EXPECTED_SEMANTIC_GATES = (
     ("benchmark_evidence", "validate_benchmark_evidence.py"),
     ("recovery_profiles", "validate_recovery_profiles.py"),
     ("identity_secret_profiles", "validate_identity_secret_profiles.py"),
+    ("identity_secret_target_evidence", "validate_identity_secret_target_evidence.py"),
     ("operational_profiles", "validate_operational_profiles.py"),
     ("supply_persistence_profiles", "validate_supply_persistence_profiles.py"),
     ("persistence_target_evidence", "validate_persistence_target_evidence.py"),
