@@ -1,0 +1,103 @@
+{
+  "schema_version": "mff.operational-profile-policy.v1",
+  "authoritative_runtime_base_commit": "80c72d9f711561dd46337d7286ee7bfb2bb5e658",
+  "claim_boundary": "Static provider-neutral profile policy only. Passing this policy never proves a target deployment, runtime health, availability, network authorization, or production authorization.",
+  "profiles": {
+    "probe_profile": {
+      "profile_schema_version": "mff.probe-profile.v1",
+      "required_fields": [
+        "runtime_key",
+        "authoritative_runtime_base_commit",
+        "image_digest",
+        "environment_id",
+        "startup",
+        "readiness",
+        "liveness",
+        "target_validation"
+      ],
+      "allowed_probe_statuses": [
+        "configured",
+        "not_applicable"
+      ],
+      "configured_probe_required_fields": [
+        "mechanism",
+        "timing_policy",
+        "failure_semantics"
+      ],
+      "not_applicable_required_fields": [
+        "rationale"
+      ],
+      "target_validation_status_required_for_resolution": "passed"
+    },
+    "network_profile": {
+      "profile_schema_version": "mff.network-profile.v1",
+      "required_fields": [
+        "runtime_key",
+        "authoritative_runtime_base_commit",
+        "image_digest",
+        "environment_id",
+        "default_deny_inherited",
+        "ingress_allow_rules",
+        "egress_allow_rules",
+        "dns_policy",
+        "target_validation"
+      ],
+      "default_deny_inherited_required": true,
+      "allow_rule_required_fields": [
+        "peer",
+        "ports",
+        "rationale"
+      ],
+      "target_validation_status_required_for_resolution": "passed"
+    },
+    "disruption_budget_profile": {
+      "profile_schema_version": "mff.disruption-budget-profile.v1",
+      "required_fields": [
+        "runtime_key",
+        "authoritative_runtime_base_commit",
+        "image_digest",
+        "environment_id",
+        "status",
+        "target_validation"
+      ],
+      "allowed_statuses": [
+        "configured",
+        "not_applicable"
+      ],
+      "configured_required_fields": [
+        "selector",
+        "budget",
+        "eviction_semantics",
+        "rationale"
+      ],
+      "not_applicable_required_fields": [
+        "rationale"
+      ],
+      "target_validation_status_required_for_resolution": "passed"
+    },
+    "anti_affinity_profile": {
+      "profile_schema_version": "mff.anti-affinity-profile.v1",
+      "required_fields": [
+        "runtime_key",
+        "authoritative_runtime_base_commit",
+        "image_digest",
+        "environment_id",
+        "status",
+        "target_validation"
+      ],
+      "allowed_statuses": [
+        "configured",
+        "not_applicable"
+      ],
+      "configured_required_fields": [
+        "topology_keys",
+        "constraints",
+        "rationale"
+      ],
+      "not_applicable_required_fields": [
+        "rationale"
+      ],
+      "target_validation_status_required_for_resolution": "passed"
+    }
+  }
+}

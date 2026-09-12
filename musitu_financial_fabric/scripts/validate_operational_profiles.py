@@ -1,0 +1,472 @@
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import re
+from pathlib import Path
+from typing import Any, Callable
+
+ROOT = Path(__file__).resolve().parents[2]
+TARGET = ROOT / "deploy" / "musitu-financial-fabric" / "provider-neutral"
+CONTRACT = TARGET / "runtime-contract.json"
+POLICY = TARGET / "operational-profile-policy.json"
+SELF_TEST_EVIDENCE = TARGET / ".validation" / "operational-profile-self-test-evidence.txt"
+
+EXPECTED_BASE_COMMIT = "80c72d9f711561dd46337d7286ee7bfb2bb5e658"
+EXPECTED_PROFILE_FIELDS = (
+    "probe_profile",
+    "network_profile",
+    "disruption_budget_profile",
+    "anti_affinity_profile",
+)
+OCI_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _load(path: Path) -> Any:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _repo_file(value: object) -> Path | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    relative = Path(value.strip())
+    if relative.is_absolute():
+        return None
+    root = ROOT.resolve()
+    resolved = (ROOT / relative).resolve()
+    try:
+        resolved.relative_to(root)
+    except ValueError:
+        return None
+    return resolved if resolved.is_file() else None
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _nonempty(value: object) -> bool:
+    return value not in (None, "", [], {})
+
+
+def _target_validation_errors(payload: object) -> list[str]:
+    errors: list[str] = []
+    if not isinstance(payload, dict):
+        return ["target_validation must be an object"]
+    if payload.get("status") != "passed":
+        errors.append("target_validation.status must be passed")
+    evidence_path = _repo_file(payload.get("evidence_ref"))
+    if evidence_path is None:
+        errors.append("target_validation.evidence_ref must reference an existing repository file")
+    declared = str(payload.get("evidence_sha256", "")).strip().lower()
+    if not SHA256_HEX.fullmatch(declared):
+        errors.append("target_validation.evidence_sha256 is missing or malformed")
+    elif evidence_path is not None and _sha256(evidence_path) != declared:
+        errors.append("target_validation evidence SHA-256 does not match retained bytes")
+    return errors
+
+
+def _common_errors(
+    key: str,
+    row: dict[str, Any],
+    payload: object,
+    schema: str,
+    required_fields: list[str],
+) -> list[str]:
+    errors: list[str] = []
+    if not isinstance(payload, dict):
+        return ["profile root must be an object"]
+    if payload.get("schema_version") != schema:
+        errors.append("profile schema_version is invalid")
+    for field in required_fields:
+        if field not in payload:
+            errors.append(f"profile missing {field}")
+    if payload.get("runtime_key") != key:
+        errors.append("profile runtime_key does not match contract row")
+    if payload.get("authoritative_runtime_base_commit") != EXPECTED_BASE_COMMIT:
+        errors.append("profile is not bound to the sealed runtime release")
+    digest = row.get("image_digest")
+    if not isinstance(digest, str) or not OCI_DIGEST.fullmatch(digest):
+        errors.append("contract row lacks a valid immutable image digest for profile binding")
+    elif payload.get("image_digest") != digest:
+        errors.append("profile image_digest does not match contract row")
+    if not isinstance(payload.get("environment_id"), str) or not payload["environment_id"].strip():
+        errors.append("profile environment_id is missing")
+    errors.extend(_target_validation_errors(payload.get("target_validation")))
+    return errors
+
+
+def _probe_block_errors(name: str, block: object, section: dict[str, Any]) -> list[str]:
+    errors: list[str] = []
+    if not isinstance(block, dict):
+        return [f"{name} probe must be an object"]
+    status = block.get("status")
+    if status not in set(section.get("allowed_probe_statuses", [])):
+        return [f"{name} probe status is invalid"]
+    if status == "configured":
+        for field in section.get("configured_probe_required_fields", []):
+            if not _nonempty(block.get(field)):
+                errors.append(f"{name} configured probe missing {field}")
+        mechanism = block.get("mechanism")
+        timing = block.get("timing_policy")
+        if not isinstance(mechanism, dict) or not mechanism:
+            errors.append(f"{name} configured probe mechanism must be a non-empty object")
+        if not isinstance(timing, dict) or not timing:
+            errors.append(f"{name} configured probe timing_policy must be a non-empty object")
+    elif status == "not_applicable":
+        for field in section.get("not_applicable_required_fields", []):
+            if not _nonempty(block.get(field)):
+                errors.append(f"{name} not-applicable probe missing {field}")
+    return errors
+
+
+def _probe_errors(key: str, row: dict[str, Any], payload: object, policy: dict[str, Any]) -> list[str]:
+    section = policy["profiles"]["probe_profile"]
+    errors = _common_errors(
+        key, row, payload, str(section["profile_schema_version"]), list(section["required_fields"])
+    )
+    if not isinstance(payload, dict):
+        return errors
+    for name in ("startup", "readiness", "liveness"):
+        errors.extend(_probe_block_errors(name, payload.get(name), section))
+    return errors
+
+
+def _allow_rule_errors(direction: str, rules: object, section: dict[str, Any]) -> list[str]:
+    errors: list[str] = []
+    if not isinstance(rules, list):
+        return [f"{direction}_allow_rules must be an array"]
+    for index, rule in enumerate(rules):
+        if not isinstance(rule, dict):
+            errors.append(f"{direction}_allow_rules[{index}] must be an object")
+            continue
+        for field in section.get("allow_rule_required_fields", []):
+            if field not in rule:
+                errors.append(f"{direction}_allow_rules[{index}] missing {field}")
+        if not _nonempty(rule.get("peer")):
+            errors.append(f"{direction}_allow_rules[{index}].peer is empty")
+        if "ports" in rule and not isinstance(rule.get("ports"), list):
+            errors.append(f"{direction}_allow_rules[{index}].ports must be an array")
+        if not isinstance(rule.get("rationale"), str) or not rule["rationale"].strip():
+            errors.append(f"{direction}_allow_rules[{index}].rationale is empty")
+    return errors
+
+
+def _network_errors(key: str, row: dict[str, Any], payload: object, policy: dict[str, Any]) -> list[str]:
+    section = policy["profiles"]["network_profile"]
+    errors = _common_errors(
+        key, row, payload, str(section["profile_schema_version"]), list(section["required_fields"])
+    )
+    if not isinstance(payload, dict):
+        return errors
+    if payload.get("default_deny_inherited") is not True:
+        errors.append("network profile must preserve inherited default-deny")
+    errors.extend(_allow_rule_errors("ingress", payload.get("ingress_allow_rules"), section))
+    errors.extend(_allow_rule_errors("egress", payload.get("egress_allow_rules"), section))
+    dns_policy = payload.get("dns_policy")
+    if not isinstance(dns_policy, dict) or not dns_policy:
+        errors.append("network profile dns_policy must be a non-empty object")
+    return errors
+
+
+def _disruption_errors(key: str, row: dict[str, Any], payload: object, policy: dict[str, Any]) -> list[str]:
+    section = policy["profiles"]["disruption_budget_profile"]
+    errors = _common_errors(
+        key, row, payload, str(section["profile_schema_version"]), list(section["required_fields"])
+    )
+    if not isinstance(payload, dict):
+        return errors
+    status = payload.get("status")
+    if status not in set(section.get("allowed_statuses", [])):
+        return errors + ["disruption budget profile status is invalid"]
+    if status == "configured":
+        for field in section.get("configured_required_fields", []):
+            if not _nonempty(payload.get(field)):
+                errors.append(f"configured disruption budget profile missing {field}")
+        selector = payload.get("selector")
+        if not isinstance(selector, dict) or not selector:
+            errors.append("configured disruption budget selector must be a non-empty object")
+        budget = payload.get("budget")
+        if not isinstance(budget, dict):
+            errors.append("configured disruption budget budget must be an object")
+        else:
+            populated = [
+                name for name in ("min_available", "max_unavailable")
+                if _nonempty(budget.get(name))
+            ]
+            if len(populated) != 1:
+                errors.append("configured disruption budget must set exactly one of min_available or max_unavailable")
+    elif status == "not_applicable":
+        for field in section.get("not_applicable_required_fields", []):
+            if not _nonempty(payload.get(field)):
+                errors.append(f"not-applicable disruption budget profile missing {field}")
+    return errors
+
+
+def _anti_affinity_errors(key: str, row: dict[str, Any], payload: object, policy: dict[str, Any]) -> list[str]:
+    section = policy["profiles"]["anti_affinity_profile"]
+    errors = _common_errors(
+        key, row, payload, str(section["profile_schema_version"]), list(section["required_fields"])
+    )
+    if not isinstance(payload, dict):
+        return errors
+    status = payload.get("status")
+    if status not in set(section.get("allowed_statuses", [])):
+        return errors + ["anti-affinity profile status is invalid"]
+    if status == "configured":
+        for field in section.get("configured_required_fields", []):
+            if not _nonempty(payload.get(field)):
+                errors.append(f"configured anti-affinity profile missing {field}")
+        keys = payload.get("topology_keys")
+        constraints = payload.get("constraints")
+        if not isinstance(keys, list) or not keys or any(not isinstance(item, str) or not item.strip() for item in keys):
+            errors.append("configured anti-affinity topology_keys must be a non-empty string array")
+        if not isinstance(constraints, list) or not constraints or any(not _nonempty(item) for item in constraints):
+            errors.append("configured anti-affinity constraints must be a non-empty array")
+    elif status == "not_applicable":
+        for field in section.get("not_applicable_required_fields", []):
+            if not _nonempty(payload.get(field)):
+                errors.append(f"not-applicable anti-affinity profile missing {field}")
+    return errors
+
+
+CHECKERS: dict[str, Callable[[str, dict[str, Any], object, dict[str, Any]], list[str]]] = {
+    "probe_profile": _probe_errors,
+    "network_profile": _network_errors,
+    "disruption_budget_profile": _disruption_errors,
+    "anti_affinity_profile": _anti_affinity_errors,
+}
+
+
+def _policy_errors(policy: object) -> list[str]:
+    errors: list[str] = []
+    if not isinstance(policy, dict):
+        return ["operational profile policy root must be an object"]
+    if policy.get("schema_version") != "mff.operational-profile-policy.v1":
+        errors.append("operational profile policy schema_version is invalid")
+    if policy.get("authoritative_runtime_base_commit") != EXPECTED_BASE_COMMIT:
+        errors.append("operational profile policy is not anchored to the sealed runtime release")
+    profiles = policy.get("profiles")
+    if not isinstance(profiles, dict) or set(profiles) != set(EXPECTED_PROFILE_FIELDS):
+        errors.append("operational profile policy field set is invalid")
+        return errors
+    for field in EXPECTED_PROFILE_FIELDS:
+        section = profiles.get(field)
+        if not isinstance(section, dict):
+            errors.append(f"{field} policy must be an object")
+            continue
+        if not isinstance(section.get("profile_schema_version"), str) or not section["profile_schema_version"]:
+            errors.append(f"{field} profile_schema_version is invalid")
+        required = section.get("required_fields")
+        if not isinstance(required, list) or not required or any(not isinstance(item, str) or not item for item in required):
+            errors.append(f"{field} required_fields is invalid")
+        if section.get("target_validation_status_required_for_resolution") != "passed":
+            errors.append(f"{field} policy does not require passed target validation")
+    network = profiles["network_profile"]
+    if network.get("default_deny_inherited_required") is not True:
+        errors.append("network profile policy does not require inherited default-deny")
+    return errors
+
+
+def _self_test() -> list[str]:
+    policy = _load(POLICY)
+    failures = _policy_errors(policy)
+    if failures:
+        return failures
+
+    evidence_ref = str(SELF_TEST_EVIDENCE.relative_to(ROOT)).replace("\\", "/")
+    evidence_sha = _sha256(SELF_TEST_EVIDENCE)
+    digest = "sha256:" + ("1" * 64)
+    row = {"image_digest": digest}
+    common = {
+        "runtime_key": "self-test",
+        "authoritative_runtime_base_commit": EXPECTED_BASE_COMMIT,
+        "image_digest": digest,
+        "environment_id": "self-test-target",
+        "target_validation": {
+            "status": "passed",
+            "evidence_ref": evidence_ref,
+            "evidence_sha256": evidence_sha,
+        },
+    }
+    configured_probe = {
+        "status": "configured",
+        "mechanism": {"type": "self-test"},
+        "timing_policy": {"source": "self-test"},
+        "failure_semantics": "self-test",
+    }
+    payloads: dict[str, dict[str, Any]] = {
+        "probe_profile": {
+            **common,
+            "schema_version": "mff.probe-profile.v1",
+            "startup": configured_probe,
+            "readiness": configured_probe,
+            "liveness": configured_probe,
+        },
+        "network_profile": {
+            **common,
+            "schema_version": "mff.network-profile.v1",
+            "default_deny_inherited": True,
+            "ingress_allow_rules": [],
+            "egress_allow_rules": [],
+            "dns_policy": {"mode": "self-test"},
+        },
+        "disruption_budget_profile": {
+            **common,
+            "schema_version": "mff.disruption-budget-profile.v1",
+            "status": "configured",
+            "selector": {"source": "self-test"},
+            "budget": {"min_available": "self-test"},
+            "eviction_semantics": "self-test",
+            "rationale": "self-test",
+        },
+        "anti_affinity_profile": {
+            **common,
+            "schema_version": "mff.anti-affinity-profile.v1",
+            "status": "configured",
+            "topology_keys": ["self-test"],
+            "constraints": [{"source": "self-test"}],
+            "rationale": "self-test",
+        },
+    }
+
+    for field, payload in payloads.items():
+        errors = CHECKERS[field]("self-test", row, payload, policy)
+        if errors:
+            failures.append(f"valid synthetic {field} was rejected: {errors}")
+
+    for field, payload in payloads.items():
+        candidate = json.loads(json.dumps(payload))
+        candidate["runtime_key"] = "wrong-runtime"
+        if not CHECKERS[field]("self-test", row, candidate, policy):
+            failures.append(f"{field} self-test failed to reject runtime drift")
+
+        candidate = json.loads(json.dumps(payload))
+        candidate["authoritative_runtime_base_commit"] = "0" * 40
+        if not CHECKERS[field]("self-test", row, candidate, policy):
+            failures.append(f"{field} self-test failed to reject release drift")
+
+        candidate = json.loads(json.dumps(payload))
+        candidate["image_digest"] = "sha256:" + ("2" * 64)
+        if not CHECKERS[field]("self-test", row, candidate, policy):
+            failures.append(f"{field} self-test failed to reject image drift")
+
+        candidate = json.loads(json.dumps(payload))
+        candidate["target_validation"]["status"] = "pending"
+        if not CHECKERS[field]("self-test", row, candidate, policy):
+            failures.append(f"{field} self-test failed to reject unpassed target validation")
+
+        candidate = json.loads(json.dumps(payload))
+        candidate["target_validation"]["evidence_sha256"] = "0" * 64
+        if not CHECKERS[field]("self-test", row, candidate, policy):
+            failures.append(f"{field} self-test failed to reject target evidence hash mismatch")
+
+    bad_probe = json.loads(json.dumps(payloads["probe_profile"]))
+    del bad_probe["readiness"]["mechanism"]
+    if not _probe_errors("self-test", row, bad_probe, policy):
+        failures.append("probe self-test failed to reject incomplete configured readiness probe")
+
+    not_applicable_probe = json.loads(json.dumps(payloads["probe_profile"]))
+    not_applicable_probe["liveness"] = {"status": "not_applicable"}
+    if not _probe_errors("self-test", row, not_applicable_probe, policy):
+        failures.append("probe self-test failed to require rationale for not-applicable probe")
+
+    bad_network = json.loads(json.dumps(payloads["network_profile"]))
+    bad_network["default_deny_inherited"] = False
+    if not _network_errors("self-test", row, bad_network, policy):
+        failures.append("network self-test failed to reject default-deny removal")
+
+    bad_network_rule = json.loads(json.dumps(payloads["network_profile"]))
+    bad_network_rule["egress_allow_rules"] = [{"peer": {"kind": "self-test"}, "ports": []}]
+    if not _network_errors("self-test", row, bad_network_rule, policy):
+        failures.append("network self-test failed to reject allow rule without rationale")
+
+    bad_disruption = json.loads(json.dumps(payloads["disruption_budget_profile"]))
+    bad_disruption["budget"] = {"min_available": "1", "max_unavailable": "1"}
+    if not _disruption_errors("self-test", row, bad_disruption, policy):
+        failures.append("disruption self-test failed to reject ambiguous budget")
+
+    bad_anti = json.loads(json.dumps(payloads["anti_affinity_profile"]))
+    bad_anti["topology_keys"] = []
+    if not _anti_affinity_errors("self-test", row, bad_anti, policy):
+        failures.append("anti-affinity self-test failed to reject empty topology keys")
+
+    return failures
+
+
+def _contract_errors() -> tuple[list[str], dict[str, tuple[int, int]]]:
+    errors: list[str] = []
+    policy = _load(POLICY)
+    errors.extend(_policy_errors(policy))
+    contract = _load(CONTRACT)
+    if contract.get("authoritative_runtime_base_commit") != EXPECTED_BASE_COMMIT:
+        errors.append("runtime contract is not anchored to the sealed release")
+        return errors, {field: (0, 0) for field in EXPECTED_PROFILE_FIELDS}
+
+    defaults = contract.get("defaults_for_unresolved_fields", {})
+    counts = {field: [0, 0] for field in EXPECTED_PROFILE_FIELDS}
+
+    for row in contract.get("runtimes", []):
+        if not isinstance(row, dict):
+            errors.append("runtime contract contains a non-object row")
+            continue
+        key = str(row.get("key", "unknown"))
+        for field in EXPECTED_PROFILE_FIELDS:
+            value = row.get(field, defaults.get(field))
+            if value in (None, "", [], {}):
+                counts[field][1] += 1
+                continue
+            path = _repo_file(value)
+            if path is None:
+                errors.append(f"{key}: {field} is not an existing repository file")
+                continue
+            try:
+                payload = _load(path)
+            except Exception as exc:
+                errors.append(f"{key}: {field} is unreadable or invalid JSON ({type(exc).__name__})")
+                continue
+            profile_errors = CHECKERS[field](key, row, payload, policy)
+            for error in profile_errors:
+                errors.append(f"{key}: {field}: {error}")
+            if not profile_errors:
+                counts[field][0] += 1
+
+    return errors, {field: (values[0], values[1]) for field, values in counts.items()}
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Validate provider-neutral probe, network, disruption, and topology profiles.")
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--self-test", action="store_true")
+    mode.add_argument("--contract", action="store_true")
+    args = parser.parse_args()
+
+    if args.self_test:
+        failures = _self_test()
+        if failures:
+            for failure in failures:
+                print(f"SELF-TEST FAILURE: {failure}")
+            return 4
+        print("PASS: operational profile validator rejects drift, default-deny removal, incomplete probes, ambiguous disruption budgets, and unbound target evidence")
+        return 0
+
+    errors, counts = _contract_errors()
+    if errors:
+        for error in errors:
+            print(f"OPERATIONAL PROFILE BLOCKER: {error}")
+        return 2
+    for field in EXPECTED_PROFILE_FIELDS:
+        resolved, unresolved = counts[field]
+        print(f"PASS: {field}: validated {resolved} resolved profiles; {unresolved} remain unresolved")
+    print("BOUNDARY: no probe timings, network allowlists, disruption budgets, topology constraints, or target execution are inferred from unresolved profiles")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
