@@ -1,0 +1,52 @@
+name: MUSITU Financial Fabric — Provider-Neutral Target Staging
+
+on:
+  push:
+    branches: [musitu-financial-fabric-provider-neutral-target-staging-20260912]
+    paths:
+      - 'deploy/musitu-financial-fabric/provider-neutral/**'
+      - 'musitu_financial_fabric/scripts/validate_provider_neutral_target.py'
+      - 'musitu_financial_fabric/stack/required-components.json'
+      - '.github/workflows/mff-provider-neutral-target-staging.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  static-target-contract:
+    name: Static provider-neutral target contract only
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12.14'
+
+      - name: Validate exact 26-runtime structural contract and fail-closed foundation
+        run: python musitu_financial_fabric/scripts/validate_provider_neutral_target.py --structure
+
+      - name: Prove target is intentionally not deployable yet
+        shell: bash
+        run: |
+          set +e
+          python musitu_financial_fabric/scripts/validate_provider_neutral_target.py --deployable
+          rc=$?
+          set -e
+          if [ "$rc" -eq 0 ]; then
+            echo 'ERROR: staging contract unexpectedly declared itself deployable.' >&2
+            exit 1
+          fi
+          if [ "$rc" -ne 3 ]; then
+            echo "ERROR: expected fail-closed deployability exit 3, got $rc" >&2
+            exit 1
+          fi
+          echo 'PASS: staging foundation remains intentionally non-deployable.'
+
+      - name: Record claim boundary
+        if: always()
+        run: |
+          echo 'Static architecture evidence only.'
+          echo 'No kubectl apply, Helm install, cloud plan/apply, production deployment, target-health proof, live-funds authorization, or independent certification occurred.'

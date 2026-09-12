@@ -1,0 +1,54 @@
+{
+  "schema_version": "mff.resource-benchmark-plan.v1",
+  "claim_boundary": "Measurement protocol only; no envelope is production sizing and no runtime has earned a resource assignment yet.",
+  "benchmark_status_required_for_deployability": "measured",
+  "candidate_test_envelopes": [
+    {
+      "name": "small-test-envelope",
+      "purpose": "low-load characterization only",
+      "cpu_request": "250m",
+      "cpu_limit": "1000m",
+      "memory_request": "256Mi",
+      "memory_limit": "1Gi"
+    },
+    {
+      "name": "medium-test-envelope",
+      "purpose": "moderate-load characterization only",
+      "cpu_request": "500m",
+      "cpu_limit": "2000m",
+      "memory_request": "512Mi",
+      "memory_limit": "2Gi"
+    },
+    {
+      "name": "large-test-envelope",
+      "purpose": "higher-load characterization only",
+      "cpu_request": "1000m",
+      "cpu_limit": "4000m",
+      "memory_request": "1Gi",
+      "memory_limit": "4Gi"
+    }
+  ],
+  "required_load_model": [
+    "request_or_message_rate",
+    "concurrency",
+    "payload_size_distribution",
+    "read_write_mix",
+    "dataset_or_state_size",
+    "test_duration",
+    "failure_or_restart_scenario"
+  ],
+  "required_measurements": [
+    "cpu_p50",
+    "cpu_p95",
+    "memory_rss_p50",
+    "memory_rss_p95",
+    "latency_p50",
+    "latency_p95",
+    "latency_p99",
+    "error_rate",
+    "restart_recovery_time",
+    "queue_or_backlog_depth_where_applicable",
+    "storage_iops_and_latency_where_applicable"
+  ],
+  "acceptance_rule": "A component resource profile may be selected only from retained measurements under a declared load model, with headroom and failure/recovery behavior documented."
+}

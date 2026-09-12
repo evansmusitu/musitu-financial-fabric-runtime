@@ -1,0 +1,13 @@
+{
+  "apiVersion": "v1",
+  "kind": "ResourceQuota",
+  "metadata": {
+    "name": "staging-no-workloads",
+    "namespace": "musitu-financial-fabric-target-staging"
+  },
+  "spec": {
+    "hard": {
+      "pods": "0"
+    }
+  }
+}
