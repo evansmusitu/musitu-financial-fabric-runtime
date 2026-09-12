@@ -1,0 +1,56 @@
+{
+  "schema_version": "mff.supply-persistence-profile-policy.v1",
+  "authoritative_runtime_base_commit": "80c72d9f711561dd46337d7286ee7bfb2bb5e658",
+  "claim_boundary": "Static provider-neutral evidence policy only. It does not assert a signed image, registry publication, Sigstore/Cosign verification, runtime statefulness, target deployment, or production authorization.",
+  "provenance_profile": {
+    "profile_schema_version": "mff.image-provenance-profile.v1",
+    "allowed_provenance_kinds": [
+      "first_party_build",
+      "upstream_verified"
+    ],
+    "required_fields": [
+      "runtime_key",
+      "authoritative_runtime_base_commit",
+      "image_digest",
+      "provenance_kind",
+      "artifact_source",
+      "source_identity",
+      "build_recipe",
+      "builder_identity",
+      "mutable_tag_only",
+      "verified_at",
+      "verification"
+    ],
+    "verification_status_required_for_resolution": "passed"
+  },
+  "persistence_profile": {
+    "profile_schema_version": "mff.persistence-profile.v1",
+    "allowed_classifications": [
+      "stateful",
+      "stateless"
+    ],
+    "required_fields": [
+      "runtime_key",
+      "authoritative_runtime_base_commit",
+      "image_digest",
+      "environment_id",
+      "classification",
+      "target_validation"
+    ],
+    "stateful_required_fields": [
+      "storage",
+      "durability",
+      "encryption_at_rest",
+      "retention",
+      "backup_restore_profile_ref",
+      "recovery_objectives",
+      "data_integrity_validation"
+    ],
+    "stateless_required_fields": [
+      "ephemeral_state_only",
+      "reconstruction_source",
+      "rationale"
+    ],
+    "target_validation_status_required_for_resolution": "passed"
+  }
+}

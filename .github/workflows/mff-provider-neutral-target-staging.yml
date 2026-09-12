@@ -10,6 +10,7 @@ on:
       - 'musitu_financial_fabric/scripts/validate_recovery_profiles.py'
       - 'musitu_financial_fabric/scripts/validate_identity_secret_profiles.py'
       - 'musitu_financial_fabric/scripts/validate_operational_profiles.py'
+      - 'musitu_financial_fabric/scripts/validate_supply_persistence_profiles.py'
       - 'musitu_financial_fabric/stack/required-components.json'
       - '.github/workflows/mff-provider-neutral-target-staging.yml'
   workflow_dispatch:
@@ -58,6 +59,12 @@ jobs:
 
       - name: Validate resolved operational profiles
         run: python musitu_financial_fabric/scripts/validate_operational_profiles.py --contract
+
+      - name: Exercise image provenance and persistence-profile integrity gate
+        run: python musitu_financial_fabric/scripts/validate_supply_persistence_profiles.py --self-test
+
+      - name: Validate resolved image provenance and persistence profiles
+        run: python musitu_financial_fabric/scripts/validate_supply_persistence_profiles.py --contract
 
       - name: Prove target is intentionally not deployable yet
         shell: bash
