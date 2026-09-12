@@ -89,10 +89,17 @@ def _passed_deployment_manifest(
     expires_at: str | None = None,
     provider_kill_independent: bool = True,
 ) -> tuple[str, str]:
+    evidence_bundle_path = tmp_path / "target-evidence-bundle.bin"
+    evidence_bundle_raw = b"test-only-target-evidence-bundle"
+    evidence_bundle_path.write_bytes(evidence_bundle_raw)
     manifest = {
         "target_environment_id": "test-only-production-target",
         "verified_at": (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat(),
         "expires_at": expires_at or (datetime.now(timezone.utc) + timedelta(days=1)).isoformat(),
+        "evidence_bundle": {
+            "path": str(evidence_bundle_path),
+            "sha256": hashlib.sha256(evidence_bundle_raw).hexdigest(),
+        },
         "release": {
             "commit_sha": commit_sha,
             "image_digest": image_digest,
@@ -225,6 +232,25 @@ def test_target_deployment_manifest_pin_is_fail_closed(tmp_path):
     result = production_readiness(cfg)
     assert result["ready_for_live_funds"] is False
     assert any(row["key"] == "deployment_evidence_manifest" and not row["ok"] for row in result["checks"])
+
+
+def test_target_evidence_bundle_pin_is_fail_closed(tmp_path):
+    path, digest = _approved_manifest(tmp_path, funds_scope="production")
+    deployment_path, deployment_digest = _passed_deployment_manifest(tmp_path, authorization_digest=digest)
+    deployment_manifest = json.loads(open(deployment_path, encoding="utf-8").read())
+    evidence_bundle_path = deployment_manifest["evidence_bundle"]["path"]
+    with open(evidence_bundle_path, "ab") as handle:
+        handle.write(b"tampered")
+    cfg = _base_production(
+        production_mode="live",
+        authorization_manifest_path=path,
+        authorization_manifest_sha256=digest,
+        deployment_evidence_manifest_path=deployment_path,
+        deployment_evidence_manifest_sha256=deployment_digest,
+    )
+    result = production_readiness(cfg)
+    assert result["ready_for_live_funds"] is False
+    assert any(row["key"] == "deployment_evidence_bundle" and not row["ok"] for row in result["checks"])
 
 
 def test_target_deployment_must_match_running_commit(tmp_path):
