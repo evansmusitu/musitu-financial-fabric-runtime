@@ -1,0 +1,53 @@
+name: MUSITU Financial Fabric — Internal Security Qualification
+
+on:
+  push:
+    branches: [musitu-financial-fabric-internal-security-qualification-20260912]
+    paths:
+      - 'musitu_financial_fabric/**'
+      - '.github/workflows/mff-internal-security-qualification.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  internal-security-qualification:
+    name: Internal security qualification only
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: musitu_financial_fabric
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12.14'
+
+      - name: Install evidence-locked application and tests
+        run: |
+          python -m pip install -c constraints-ci.txt -e '.[test]'
+          python -m pip check
+
+      - name: Install pinned defensive scanners
+        run: python -m pip install 'pip-audit==2.10.1' 'bandit==1.9.4'
+
+      - name: Audit pinned Python dependencies
+        run: python -m pip_audit -r constraints-ci.txt --progress-spinner off
+
+      - name: Static Python security analysis
+        run: bandit -r app -ll -ii
+
+      - name: Compile and run complete test suite
+        run: |
+          python -m compileall -q app tests
+          pytest -q
+
+      - name: Record qualification boundary
+        if: always()
+        run: |
+          echo 'MUSITU internal security qualification only.'
+          echo 'Not independent validation, certification, regulatory approval, production authorization, or proof of a deployed target.'
