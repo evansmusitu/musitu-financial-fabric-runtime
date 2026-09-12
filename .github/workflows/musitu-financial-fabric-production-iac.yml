@@ -250,8 +250,8 @@ jobs:
           data['independent_kill_controls']['provider']['independent_of_application'] = False
           json.dump(data, open(target, 'w'), sort_keys=True)
           PY
-          nonindependent_digest="$(sha256sum "$nonindepent" | awk '{print $1}')"
-          if tofu -chdir=infra plan -input=false -lock=false -refresh=fals`{common[@]} \
+          nonindependent_digest="$(sha256sum "$nonindependent" | awk '{print $1}')"
+          if tofu -chdir=infra plan -input=false -lock=false -refresh=false \
             -var='environment=production' \
             -var='production_mode=pilot' \
             -var='live_funds_enabled=true' \
