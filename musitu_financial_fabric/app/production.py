@@ -93,6 +93,20 @@ def _postgres_transport_secure(value: str) -> bool:
     return sslmode in _SECURE_POSTGRES_SSLMODES
 
 
+def _retained_evidence_ok(row: Any, *, required_status: str) -> bool:
+    if not isinstance(row, dict) or row.get("status") != required_status:
+        return False
+    evidence_ref = row.get("evidence_ref")
+    evidence_sha256 = str(row.get("evidence_sha256", "")).strip().lower()
+    if not isinstance(evidence_ref, str) or not evidence_ref.strip() or not _SHA256_RE.fullmatch(evidence_sha256):
+        return False
+    try:
+        evidence_raw = Path(evidence_ref.strip()).read_bytes()
+    except OSError:
+        return False
+    return hashlib.sha256(evidence_raw).hexdigest() == evidence_sha256
+
+
 def _authorization_manifest(cfg: Settings) -> tuple[dict[str, Any] | None, str | None]:
     if not cfg.authorization_manifest_path or not cfg.authorization_manifest_sha256:
         return None, "authorization evidence manifest is not configured"
@@ -175,17 +189,12 @@ def _evidence_checks(cfg: Settings) -> list[ProductionCheck]:
 
     for key in _REQUIRED_EVIDENCE:
         row = evidence.get(key)
-        ok = (
-            isinstance(row, dict)
-            and row.get("status") == "approved"
-            and isinstance(row.get("evidence_ref"), str)
-            and bool(row["evidence_ref"].strip())
-        )
+        ok = _retained_evidence_ok(row, required_status="approved")
         checks.append(ProductionCheck(
             f"evidence_{key}",
-            bool(ok),
+            ok,
             "external",
-            f"{key} approval evidence {'present' if ok else 'missing or not approved'}",
+            f"{key} approval evidence {'is retained and byte-pinned' if ok else 'is missing, not approved, unavailable, or not byte-pinned'}",
         ))
 
     scope = str(manifest.get("funds_scope", "")).lower()
@@ -389,17 +398,12 @@ def _deployment_evidence_checks(cfg: Settings) -> list[ProductionCheck]:
     else:
         for key in _REQUIRED_DEPLOYMENT_EVIDENCE:
             row = evidence.get(key)
-            ok = (
-                isinstance(row, dict)
-                and row.get("status") == "passed"
-                and isinstance(row.get("evidence_ref"), str)
-                and bool(row["evidence_ref"].strip())
-            )
+            ok = _retained_evidence_ok(row, required_status="passed")
             checks.append(ProductionCheck(
                 f"deployment_{key}",
-                bool(ok),
+                ok,
                 "deployment",
-                f"{key} target-environment evidence {'passed' if ok else 'missing or not passed'}",
+                f"{key} target-environment evidence {'is retained and byte-pinned' if ok else 'is missing, not passed, unavailable, or not byte-pinned'}",
             ))
 
     kill_controls = manifest.get("independent_kill_controls")
@@ -413,18 +417,12 @@ def _deployment_evidence_checks(cfg: Settings) -> list[ProductionCheck]:
     else:
         for key in _REQUIRED_INDEPENDENT_KILL_CONTROLS:
             row = kill_controls.get(key)
-            ok = (
-                isinstance(row, dict)
-                and row.get("status") == "verified"
-                and row.get("independent_of_application") is True
-                and isinstance(row.get("evidence_ref"), str)
-                and bool(row["evidence_ref"].strip())
-            )
+            ok = _retained_evidence_ok(row, required_status="verified") and row.get("independent_of_application") is True
             checks.append(ProductionCheck(
                 f"independent_kill_{key}",
-                bool(ok),
+                ok,
                 "deployment",
-                f"independent {key} kill control {'verified' if ok else 'missing or not independently verified'}",
+                f"independent {key} kill control {'is independently verified with retained byte-pinned evidence' if ok else 'is missing, not independent, unavailable, or not byte-pinned'}",
             ))
 
     now = datetime.now(timezone.utc)

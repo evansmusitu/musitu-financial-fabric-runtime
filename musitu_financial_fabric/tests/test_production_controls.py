@@ -45,6 +45,16 @@ def _base_production(**overrides):
     return Settings(**values)
 
 
+def _retained_evidence(tmp_path, name: str) -> dict[str, str]:
+    path = tmp_path / f"{name}.evidence"
+    raw = f"test-only retained evidence:{name}".encode()
+    path.write_bytes(raw)
+    return {
+        "evidence_ref": str(path),
+        "evidence_sha256": hashlib.sha256(raw).hexdigest(),
+    }
+
+
 def _approved_manifest(
     tmp_path,
     *,
@@ -66,11 +76,11 @@ def _approved_manifest(
             "sha256": hashlib.sha256(evidence_bundle_raw).hexdigest(),
         },
         "evidence": {
-            "regulator": {"status": "approved", "evidence_ref": "RBZ-REF"},
-            "sponsor_bank": {"status": "approved", "evidence_ref": "BANK-REF"},
-            "data_protection": {"status": "approved", "evidence_ref": "DPA-REF"},
-            "independent_security": {"status": "approved", "evidence_ref": "PENTEST-REF"},
-            "rail_provider": {"status": "approved", "evidence_ref": "RAIL-CONTRACT-REF"},
+            "regulator": {"status": "approved", **_retained_evidence(tmp_path, "authorization-regulator")},
+            "sponsor_bank": {"status": "approved", **_retained_evidence(tmp_path, "authorization-sponsor-bank")},
+            "data_protection": {"status": "approved", **_retained_evidence(tmp_path, "authorization-data-protection")},
+            "independent_security": {"status": "approved", **_retained_evidence(tmp_path, "authorization-independent-security")},
+            "rail_provider": {"status": "approved", **_retained_evidence(tmp_path, "authorization-rail-provider")},
         },
     }
     if include_launch_scope:
@@ -117,32 +127,32 @@ def _passed_deployment_manifest(
             "authorization_manifest_sha256": authorization_digest,
         },
         "evidence": {
-            "dark_deployment": {"status": "passed", "evidence_ref": "TEST-ONLY-DARK"},
+            "dark_deployment": {"status": "passed", **_retained_evidence(tmp_path, "deployment-dark")},
             "required_runtime_health": {
                 "status": required_runtime_health_status,
-                "evidence_ref": "TEST-ONLY-REQUIRED-RUNTIME-HEALTH",
+                **_retained_evidence(tmp_path, "deployment-required-runtime-health"),
             },
-            "monitoring_alerting": {"status": "passed", "evidence_ref": "TEST-ONLY-MONITORING"},
-            "postgres_backup_restore": {"status": "passed", "evidence_ref": "TEST-ONLY-POSTGRES-DR"},
-            "tigerbeetle_recovery": {"status": "passed", "evidence_ref": "TEST-ONLY-TB-DR"},
-            "provider_reconciliation": {"status": "passed", "evidence_ref": "TEST-ONLY-RECONCILIATION"},
-            "activation_rollback_drill": {"status": "passed", "evidence_ref": "TEST-ONLY-ROLLBACK"},
+            "monitoring_alerting": {"status": "passed", **_retained_evidence(tmp_path, "deployment-monitoring")},
+            "postgres_backup_restore": {"status": "passed", **_retained_evidence(tmp_path, "deployment-postgres-dr")},
+            "tigerbeetle_recovery": {"status": "passed", **_retained_evidence(tmp_path, "deployment-tigerbeetle-dr")},
+            "provider_reconciliation": {"status": "passed", **_retained_evidence(tmp_path, "deployment-reconciliation")},
+            "activation_rollback_drill": {"status": "passed", **_retained_evidence(tmp_path, "deployment-rollback")},
         },
         "independent_kill_controls": {
             "network": {
                 "status": "verified",
                 "independent_of_application": True,
-                "evidence_ref": "TEST-ONLY-NETWORK-KILL",
+                **_retained_evidence(tmp_path, "kill-network"),
             },
             "provider": {
                 "status": "verified",
                 "independent_of_application": provider_kill_independent,
-                "evidence_ref": "TEST-ONLY-PROVIDER-KILL",
+                **_retained_evidence(tmp_path, "kill-provider"),
             },
             "settlement": {
                 "status": "verified",
                 "independent_of_application": True,
-                "evidence_ref": "TEST-ONLY-SETTLEMENT-KILL",
+                **_retained_evidence(tmp_path, "kill-settlement"),
             },
         },
     }
@@ -201,6 +211,45 @@ def test_authorization_evidence_bundle_pin_is_fail_closed(tmp_path):
     result = production_readiness(cfg)
     assert result["ready_for_live_funds"] is False
     assert any(row["key"] == "authorization_evidence_bundle" and not row["ok"] for row in result["checks"])
+
+
+def test_authorization_row_placeholder_reference_is_fail_closed(tmp_path):
+    path, _ = _approved_manifest(tmp_path, funds_scope="production")
+    manifest = json.loads(open(path, encoding="utf-8").read())
+    manifest["evidence"]["independent_security"]["evidence_ref"] = "PENTEST-REF"
+    raw = json.dumps(manifest, sort_keys=True).encode()
+    open(path, "wb").write(raw)
+    digest = hashlib.sha256(raw).hexdigest()
+    deployment_path, deployment_digest = _passed_deployment_manifest(tmp_path, authorization_digest=digest)
+    cfg = _base_production(
+        production_mode="live",
+        authorization_manifest_path=path,
+        authorization_manifest_sha256=digest,
+        deployment_evidence_manifest_path=deployment_path,
+        deployment_evidence_manifest_sha256=deployment_digest,
+    )
+    result = production_readiness(cfg)
+    assert result["ready_for_live_funds"] is False
+    assert any(row["key"] == "evidence_independent_security" and not row["ok"] for row in result["checks"])
+
+
+def test_authorization_row_retained_bytes_are_fail_closed_on_tamper(tmp_path):
+    path, digest = _approved_manifest(tmp_path, funds_scope="production")
+    manifest = json.loads(open(path, encoding="utf-8").read())
+    evidence_path = manifest["evidence"]["regulator"]["evidence_ref"]
+    with open(evidence_path, "ab") as handle:
+        handle.write(b"tampered")
+    deployment_path, deployment_digest = _passed_deployment_manifest(tmp_path, authorization_digest=digest)
+    cfg = _base_production(
+        production_mode="live",
+        authorization_manifest_path=path,
+        authorization_manifest_sha256=digest,
+        deployment_evidence_manifest_path=deployment_path,
+        deployment_evidence_manifest_sha256=deployment_digest,
+    )
+    result = production_readiness(cfg)
+    assert result["ready_for_live_funds"] is False
+    assert any(row["key"] == "evidence_regulator" and not row["ok"] for row in result["checks"])
 
 
 def test_external_authorization_alone_cannot_open_without_target_deployment_evidence(tmp_path):
@@ -327,6 +376,44 @@ def test_target_evidence_bundle_pin_is_fail_closed(tmp_path):
     result = production_readiness(cfg)
     assert result["ready_for_live_funds"] is False
     assert any(row["key"] == "deployment_evidence_bundle" and not row["ok"] for row in result["checks"])
+
+
+def test_target_evidence_row_retained_bytes_are_fail_closed_on_tamper(tmp_path):
+    path, digest = _approved_manifest(tmp_path, funds_scope="production")
+    deployment_path, deployment_digest = _passed_deployment_manifest(tmp_path, authorization_digest=digest)
+    deployment_manifest = json.loads(open(deployment_path, encoding="utf-8").read())
+    evidence_path = deployment_manifest["evidence"]["dark_deployment"]["evidence_ref"]
+    with open(evidence_path, "ab") as handle:
+        handle.write(b"tampered")
+    cfg = _base_production(
+        production_mode="live",
+        authorization_manifest_path=path,
+        authorization_manifest_sha256=digest,
+        deployment_evidence_manifest_path=deployment_path,
+        deployment_evidence_manifest_sha256=deployment_digest,
+    )
+    result = production_readiness(cfg)
+    assert result["ready_for_live_funds"] is False
+    assert any(row["key"] == "deployment_dark_deployment" and not row["ok"] for row in result["checks"])
+
+
+def test_kill_control_retained_bytes_are_fail_closed_on_tamper(tmp_path):
+    path, digest = _approved_manifest(tmp_path, funds_scope="production")
+    deployment_path, deployment_digest = _passed_deployment_manifest(tmp_path, authorization_digest=digest)
+    deployment_manifest = json.loads(open(deployment_path, encoding="utf-8").read())
+    evidence_path = deployment_manifest["independent_kill_controls"]["network"]["evidence_ref"]
+    with open(evidence_path, "ab") as handle:
+        handle.write(b"tampered")
+    cfg = _base_production(
+        production_mode="live",
+        authorization_manifest_path=path,
+        authorization_manifest_sha256=digest,
+        deployment_evidence_manifest_path=deployment_path,
+        deployment_evidence_manifest_sha256=deployment_digest,
+    )
+    result = production_readiness(cfg)
+    assert result["ready_for_live_funds"] is False
+    assert any(row["key"] == "independent_kill_network" and not row["ok"] for row in result["checks"])
 
 
 def test_target_deployment_must_match_running_commit(tmp_path):
