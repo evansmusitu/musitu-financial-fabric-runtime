@@ -33,7 +33,9 @@ Before any real funds are enabled:
 
 The actual regulator, sponsor/settlement bank, applicable data-protection authority, and independent-security evidence must be retained outside the source repository. Provider/card/custody approvals are also required where those capabilities are in the approved launch perimeter.
 
-Create the deployed authorization manifest from the repository example only after authentic evidence exists. Compute the exact SHA-256 of that deployed file and configure both:
+Create the deployed authorization manifest from the repository example only after authentic evidence exists. Retain the actual regulator/bank/data-protection/security/rail approval artifacts as a dedicated evidence bundle outside the source repository, mount that exact bundle read-only where the production gate can read it, compute its SHA-256, and record both path and digest under `evidence_bundle`. Missing, unreadable, or modified authorization evidence must keep the funds gate closed.
+
+Compute the exact SHA-256 of the deployed authorization manifest and configure both:
 
 - `MUSITU_AUTHORIZATION_MANIFEST_PATH`
 - `MUSITU_AUTHORIZATION_MANIFEST_SHA256`

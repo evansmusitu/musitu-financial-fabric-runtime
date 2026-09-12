@@ -1,6 +1,10 @@
 {
   "funds_scope": "pilot",
   "expires_at": "REPLACE-WITH-RFC3339-UTC-EXPIRY",
+  "evidence_bundle": {
+    "path": "REPLACE-WITH-MOUNTED-AUTHORIZATION-EVIDENCE-BUNDLE-PATH",
+    "sha256": "REPLACE-WITH-64-HEX-AUTHORIZATION-EVIDENCE-BUNDLE-SHA256"
+  },
   "launch_scope": {
     "rails": ["ecocash"],
     "currencies": ["USD"],
@@ -13,5 +17,5 @@
     "independent_security": {"status": "pending", "evidence_ref": ""},
     "rail_provider": {"status": "pending", "evidence_ref": ""}
   },
-  "notes": "Example structure only. Replace every pending field and the expiry with authentic externally retained evidence before pinning this manifest. Never commit credentials or confidential authorization material."
+  "notes": "Example structure only. Retain the authentic external approval documents as a dedicated read-only evidence bundle, record its exact mounted path and SHA-256, replace every pending field and the expiry, then pin this manifest. Matching hashes prove byte integrity only; they do not prove issuer authenticity or create authorization. Never commit credentials or confidential authorization material."
 }

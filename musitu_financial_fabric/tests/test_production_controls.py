@@ -55,8 +55,15 @@ def _approved_manifest(
     include_expiry: bool = True,
     expires_at: str | None = None,
 ) -> tuple[str, str]:
+    evidence_bundle_path = tmp_path / f"authorization-evidence-{funds_scope}.bin"
+    evidence_bundle_raw = b"test-only-authorization-evidence-bundle"
+    evidence_bundle_path.write_bytes(evidence_bundle_raw)
     manifest = {
         "funds_scope": funds_scope,
+        "evidence_bundle": {
+            "path": str(evidence_bundle_path),
+            "sha256": hashlib.sha256(evidence_bundle_raw).hexdigest(),
+        },
         "evidence": {
             "regulator": {"status": "approved", "evidence_ref": "RBZ-REF"},
             "sponsor_bank": {"status": "approved", "evidence_ref": "BANK-REF"},
@@ -144,6 +151,25 @@ def test_live_funds_closed_without_external_evidence():
     assert result["ready_for_live_funds"] is False
     with pytest.raises(ProductionGateError):
         assert_live_funds_allowed(cfg)
+
+
+def test_authorization_evidence_bundle_pin_is_fail_closed(tmp_path):
+    path, digest = _approved_manifest(tmp_path, funds_scope="production")
+    deployment_path, deployment_digest = _passed_deployment_manifest(tmp_path, authorization_digest=digest)
+    authorization_manifest = json.loads(open(path, encoding="utf-8").read())
+    evidence_bundle_path = authorization_manifest["evidence_bundle"]["path"]
+    with open(evidence_bundle_path, "ab") as handle:
+        handle.write(b"tampered")
+    cfg = _base_production(
+        production_mode="live",
+        authorization_manifest_path=path,
+        authorization_manifest_sha256=digest,
+        deployment_evidence_manifest_path=deployment_path,
+        deployment_evidence_manifest_sha256=deployment_digest,
+    )
+    result = production_readiness(cfg)
+    assert result["ready_for_live_funds"] is False
+    assert any(row["key"] == "authorization_evidence_bundle" and not row["ok"] for row in result["checks"])
 
 
 def test_external_authorization_alone_cannot_open_without_target_deployment_evidence(tmp_path):

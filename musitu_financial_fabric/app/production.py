@@ -142,6 +142,32 @@ def _evidence_checks(cfg: Settings) -> list[ProductionCheck]:
         return [ProductionCheck("authorization_manifest", False, "external", error)]
     assert manifest is not None
     checks = [ProductionCheck("authorization_manifest", True, "external", "pinned authorization manifest verified")]
+
+    evidence_bundle = manifest.get("evidence_bundle")
+    bundle_ok = False
+    bundle_message = "authorization evidence bundle path and SHA-256 are missing or malformed"
+    if isinstance(evidence_bundle, dict):
+        bundle_path_raw = evidence_bundle.get("path")
+        bundle_sha256 = str(evidence_bundle.get("sha256", "")).strip().lower()
+        if isinstance(bundle_path_raw, str) and bundle_path_raw.strip() and _SHA256_RE.fullmatch(bundle_sha256):
+            try:
+                bundle_raw = Path(bundle_path_raw.strip()).read_bytes()
+                actual_bundle_sha256 = hashlib.sha256(bundle_raw).hexdigest()
+                bundle_ok = actual_bundle_sha256 == bundle_sha256
+                bundle_message = (
+                    "byte-pinned authorization evidence bundle verified"
+                    if bundle_ok
+                    else "authorization evidence bundle SHA-256 mismatch"
+                )
+            except OSError as exc:
+                bundle_message = f"authorization evidence bundle unavailable: {type(exc).__name__}"
+    checks.append(ProductionCheck(
+        "authorization_evidence_bundle",
+        bundle_ok,
+        "external",
+        bundle_message,
+    ))
+
     evidence = manifest.get("evidence")
     if not isinstance(evidence, dict):
         return checks + [ProductionCheck("authorization_evidence", False, "external", "manifest evidence object missing")]

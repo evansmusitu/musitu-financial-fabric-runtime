@@ -20,6 +20,7 @@ This matrix separates software-controlled readiness from external authorization.
 | Provider settlement | Live-funds authorization gate required before monetary posting |
 | Secrets | No production secret belongs in Git; deploy through the secrets control plane |
 | Production evidence | Authorization manifest must be external to the repo and SHA-256 pinned |
+| Authorization evidence bundle integrity | The authorization manifest must name a read-only mounted evidence bundle and SHA-256; runtime and IaC fail closed if the exact retained approval bundle is absent or its bytes do not match |
 | Target activation evidence | Live-funds readiness also requires a separately SHA-256-pinned target-deployment evidence manifest bound to the exact runtime commit, immutable OCI image digest, distinct rollback image digest, and exact authorization-manifest SHA-256 |
 | Target evidence bundle integrity | The target-deployment manifest must name a mounted evidence bundle and SHA-256; runtime and IaC independently fail closed if that exact bundle is absent or its bytes do not match |
 | Executed target controls | The target manifest must reference passed dark-deployment, monitoring/alerting, PostgreSQL backup/restore, TigerBeetle recovery, provider reconciliation, and activation/rollback drills |
