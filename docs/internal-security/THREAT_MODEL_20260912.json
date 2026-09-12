@@ -204,9 +204,11 @@
       "status": "partial",
       "evidence_refs": [
         "musitu_financial_fabric/tests/test_production_request_limits.py",
-        "musitu_financial_fabric/tests/test_tigerbeetle_operation_timeout.py"
+        "musitu_financial_fabric/tests/test_tigerbeetle_operation_timeout.py",
+        "musitu_financial_fabric/tests/test_postgres_wait_timeouts.py",
+        "musitu_financial_fabric/app/db.py"
       ],
-      "residual": "Realistic load, resource, queue, timeout, and recovery benchmarks have not yet been measured on the intended target."
+      "residual": "Request-body limits and TigerBeetle/PostgreSQL wait deadlines are internally evidenced, but realistic target load, connection-pool pressure, queue behavior, resource ceilings, and recovery benchmarks remain unmeasured."
     },
     {
       "id": "MFF-T16",
