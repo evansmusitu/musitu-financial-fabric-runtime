@@ -163,6 +163,13 @@ locals {
     can(regex("^[0-9a-fA-F]{64}$", var.deployment_evidence_manifest_sha256)) &&
     lower(var.deployment_evidence_manifest_sha256) == sha256(local.deployment_manifest_raw)
   )
+  deployment_evidence_bundle_path   = trimspace(try(local.deployment_manifest.evidence_bundle.path, ""))
+  deployment_evidence_bundle_sha256 = lower(trimspace(try(local.deployment_manifest.evidence_bundle.sha256, "")))
+  deployment_evidence_bundle_hash_matches = (
+    local.deployment_evidence_bundle_path != "" &&
+    can(regex("^[0-9a-fA-F]{64}$", local.deployment_evidence_bundle_sha256)) &&
+    try(filesha256(local.deployment_evidence_bundle_path) == local.deployment_evidence_bundle_sha256, false)
+  )
   deployment_target_identity = trimspace(try(local.deployment_manifest.target_environment_id, "")) != ""
 
   release_commit_matches = (
@@ -246,6 +253,7 @@ resource "terraform_data" "musitu_production_guard" {
     precondition {
       condition = !var.live_funds_enabled || (
         local.deployment_hash_matches &&
+        local.deployment_evidence_bundle_hash_matches &&
         local.deployment_target_identity &&
         local.release_commit_matches &&
         local.release_image_matches &&
@@ -256,7 +264,7 @@ resource "terraform_data" "musitu_production_guard" {
         local.deployment_verified_at_valid &&
         local.deployment_not_expired
       )
-      error_message = "Live funds require a byte-pinned target deployment evidence manifest bound to the exact release commit, immutable OCI digest, distinct rollback digest, external authorization pin, executed target-environment drills, and independent network/provider/settlement kill controls."
+      error_message = "Live funds require a byte-pinned target deployment evidence manifest and byte-pinned target evidence bundle bound to the exact release commit, immutable OCI digest, distinct rollback digest, external authorization pin, executed target-environment drills, and independent network/provider/settlement kill controls."
     }
   }
 }
