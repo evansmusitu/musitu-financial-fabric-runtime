@@ -105,6 +105,80 @@ def _common_errors(
     return errors
 
 
+def _valid_network_port(value: object) -> bool:
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        return 1 <= value <= 65535
+    if not isinstance(value, str):
+        return False
+    name = value.strip()
+    return (
+        1 <= len(name) <= 15
+        and bool(NAMED_PORT.fullmatch(name))
+        and any(char.isalpha() for char in name)
+    )
+
+
+def _probe_mechanism_errors(name: str, mechanism: object, section: dict[str, Any]) -> list[str]:
+    if not isinstance(mechanism, dict) or not mechanism:
+        return [f"{name} configured probe mechanism must be a non-empty object"]
+    probe_type = mechanism.get("type")
+    allowed = set(section.get("configured_probe_mechanism_types", []))
+    if probe_type not in allowed:
+        return [f"{name} configured probe mechanism.type must be one of {sorted(allowed)}"]
+    errors: list[str] = []
+    if probe_type == "exec":
+        command = mechanism.get("command")
+        if not isinstance(command, list) or not command or any(not isinstance(item, str) or not item for item in command):
+            errors.append(f"{name} exec probe command must be a non-empty string array")
+    elif probe_type == "grpc":
+        port = mechanism.get("port")
+        if isinstance(port, bool) or not isinstance(port, int) or not (1 <= port <= 65535):
+            errors.append(f"{name} grpc probe port must be a numeric port from 1 through 65535")
+        service = mechanism.get("service")
+        if service is not None and (not isinstance(service, str) or not service.strip()):
+            errors.append(f"{name} grpc probe service must be a non-empty string when provided")
+    elif probe_type == "http_get":
+        if not _valid_network_port(mechanism.get("port")):
+            errors.append(f"{name} http_get probe port must be an explicit numeric or named port")
+        path = mechanism.get("path")
+        if not isinstance(path, str) or not path.startswith("/"):
+            errors.append(f"{name} http_get probe path must be an absolute HTTP path")
+        scheme = mechanism.get("scheme", "HTTP")
+        if scheme not in {"HTTP", "HTTPS"}:
+            errors.append(f"{name} http_get probe scheme must be HTTP or HTTPS")
+    elif probe_type == "tcp_socket":
+        if not _valid_network_port(mechanism.get("port")):
+            errors.append(f"{name} tcp_socket probe port must be an explicit numeric or named port")
+    return errors
+
+
+def _probe_timing_errors(name: str, timing: object, section: dict[str, Any]) -> list[str]:
+    if not isinstance(timing, dict) or not timing:
+        return [f"{name} configured probe timing_policy must be a non-empty object"]
+    errors: list[str] = []
+    required = section.get("configured_probe_timing_required_fields", [])
+    for field in required:
+        value = timing.get(field)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            errors.append(f"{name} configured probe {field} must be an integer >= 1")
+    initial_delay = timing.get("initial_delay_seconds")
+    if initial_delay is not None and (
+        isinstance(initial_delay, bool) or not isinstance(initial_delay, int) or initial_delay < 0
+    ):
+        errors.append(f"{name} configured probe initial_delay_seconds must be an integer >= 0")
+    termination = timing.get("termination_grace_period_seconds")
+    if termination is not None:
+        if name == "readiness":
+            errors.append("readiness probe must not set termination_grace_period_seconds")
+        elif isinstance(termination, bool) or not isinstance(termination, int) or termination < 1:
+            errors.append(f"{name} configured probe termination_grace_period_seconds must be an integer >= 1")
+    if name in {"startup", "liveness"} and timing.get("success_threshold") != 1:
+        errors.append(f"{name} configured probe success_threshold must equal 1")
+    return errors
+
+
 def _probe_block_errors(name: str, block: object, section: dict[str, Any]) -> list[str]:
     errors: list[str] = []
     if not isinstance(block, dict):
@@ -116,12 +190,8 @@ def _probe_block_errors(name: str, block: object, section: dict[str, Any]) -> li
         for field in section.get("configured_probe_required_fields", []):
             if not _nonempty(block.get(field)):
                 errors.append(f"{name} configured probe missing {field}")
-        mechanism = block.get("mechanism")
-        timing = block.get("timing_policy")
-        if not isinstance(mechanism, dict) or not mechanism:
-            errors.append(f"{name} configured probe mechanism must be a non-empty object")
-        if not isinstance(timing, dict) or not timing:
-            errors.append(f"{name} configured probe timing_policy must be a non-empty object")
+        errors.extend(_probe_mechanism_errors(name, block.get("mechanism"), section))
+        errors.extend(_probe_timing_errors(name, block.get("timing_policy"), section))
     elif status == "not_applicable":
         for field in section.get("not_applicable_required_fields", []):
             if not _nonempty(block.get(field)):
@@ -139,21 +209,6 @@ def _probe_errors(key: str, row: dict[str, Any], payload: object, policy: dict[s
     for name in ("startup", "readiness", "liveness"):
         errors.extend(_probe_block_errors(name, payload.get(name), section))
     return errors
-
-
-def _valid_network_port(value: object) -> bool:
-    if isinstance(value, bool):
-        return False
-    if isinstance(value, int):
-        return 1 <= value <= 65535
-    if not isinstance(value, str):
-        return False
-    name = value.strip()
-    return (
-        1 <= len(name) <= 15
-        and bool(NAMED_PORT.fullmatch(name))
-        and any(char.isalpha() for char in name)
-    )
 
 
 def _network_port_errors(direction: str, rule_index: int, ports: object, section: dict[str, Any]) -> list[str]:
@@ -323,6 +378,13 @@ def _policy_errors(policy: object) -> list[str]:
             errors.append(f"{field} required_fields is invalid")
         if section.get("target_validation_status_required_for_resolution") != "passed":
             errors.append(f"{field} policy does not require passed target validation")
+    probe = profiles["probe_profile"]
+    if set(probe.get("configured_probe_mechanism_types") or []) != {"exec", "grpc", "http_get", "tcp_socket"}:
+        errors.append("probe profile mechanism type set is invalid")
+    if probe.get("configured_probe_timing_required_fields") != [
+        "period_seconds", "timeout_seconds", "failure_threshold", "success_threshold"
+    ]:
+        errors.append("probe profile timing field set is invalid")
     network = profiles["network_profile"]
     if network.get("default_deny_inherited_required") is not True:
         errors.append("network profile policy does not require inherited default-deny")
@@ -359,8 +421,14 @@ def _self_test() -> list[str]:
     }
     configured_probe = {
         "status": "configured",
-        "mechanism": {"type": "self-test"},
-        "timing_policy": {"source": "self-test"},
+        "mechanism": {"type": "http_get", "port": 8080, "path": "/healthz", "scheme": "HTTP"},
+        "timing_policy": {
+            "period_seconds": 10,
+            "timeout_seconds": 2,
+            "failure_threshold": 3,
+            "success_threshold": 1,
+            "initial_delay_seconds": 0,
+        },
         "failure_semantics": "self-test",
     }
     payloads: dict[str, dict[str, Any]] = {
@@ -439,6 +507,26 @@ def _self_test() -> list[str]:
     del bad_probe["readiness"]["mechanism"]
     if not _probe_errors("self-test", row, bad_probe, policy):
         failures.append("probe self-test failed to reject incomplete configured readiness probe")
+
+    bad_probe_type = json.loads(json.dumps(payloads["probe_profile"]))
+    bad_probe_type["readiness"]["mechanism"] = {"type": "self-test"}
+    if not _probe_errors("self-test", row, bad_probe_type, policy):
+        failures.append("probe self-test failed to reject unsupported probe mechanism")
+
+    bad_probe_timing = json.loads(json.dumps(payloads["probe_profile"]))
+    bad_probe_timing["readiness"]["timing_policy"]["period_seconds"] = 0
+    if not _probe_errors("self-test", row, bad_probe_timing, policy):
+        failures.append("probe self-test failed to reject invalid period_seconds")
+
+    bad_probe_success = json.loads(json.dumps(payloads["probe_profile"]))
+    bad_probe_success["liveness"]["timing_policy"]["success_threshold"] = 2
+    if not _probe_errors("self-test", row, bad_probe_success, policy):
+        failures.append("probe self-test failed to enforce liveness success_threshold=1")
+
+    bad_readiness_grace = json.loads(json.dumps(payloads["probe_profile"]))
+    bad_readiness_grace["readiness"]["timing_policy"]["termination_grace_period_seconds"] = 5
+    if not _probe_errors("self-test", row, bad_readiness_grace, policy):
+        failures.append("probe self-test failed to reject readiness termination grace period")
 
     not_applicable_probe = json.loads(json.dumps(payloads["probe_profile"]))
     not_applicable_probe["liveness"] = {"status": "not_applicable"}
@@ -547,7 +635,7 @@ def main() -> int:
             for failure in failures:
                 print(f"SELF-TEST FAILURE: {failure}")
             return 4
-        print("PASS: operational profile validator rejects drift, default-deny removal, implicit all-port rules, invalid disruption budgets, incomplete probes, and unbound target evidence")
+        print("PASS: operational profile validator rejects drift, invalid probe mechanisms/timing, default-deny removal, implicit all-port rules, invalid disruption budgets, and unbound target evidence")
         return 0
 
     errors, counts = _contract_errors()
@@ -558,7 +646,7 @@ def main() -> int:
     for field in EXPECTED_PROFILE_FIELDS:
         resolved, unresolved = counts[field]
         print(f"PASS: {field}: validated {resolved} resolved profiles; {unresolved} remain unresolved")
-    print("BOUNDARY: no probe timings, network allowlists, disruption budgets, topology constraints, or target execution are inferred from unresolved profiles")
+    print("BOUNDARY: no probe mechanisms/timings, network allowlists, disruption budgets, topology constraints, or target execution are inferred from unresolved profiles")
     return 0
 
 

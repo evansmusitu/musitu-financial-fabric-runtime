@@ -24,6 +24,18 @@
         "timing_policy",
         "failure_semantics"
       ],
+      "configured_probe_mechanism_types": [
+        "exec",
+        "grpc",
+        "http_get",
+        "tcp_socket"
+      ],
+      "configured_probe_timing_required_fields": [
+        "period_seconds",
+        "timeout_seconds",
+        "failure_threshold",
+        "success_threshold"
+      ],
       "not_applicable_required_fields": [
         "rationale"
       ],
