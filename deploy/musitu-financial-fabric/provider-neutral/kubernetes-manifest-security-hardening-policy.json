@@ -1,0 +1,10 @@
+{
+  "schema_version": "mff.kubernetes-manifest-security-hardening-policy.v1",
+  "authoritative_runtime_base_commit": "80c72d9f711561dd46337d7286ee7bfb2bb5e658",
+  "source_manifest_semantics_policy_schema_version": "mff.kubernetes-manifest-semantics-policy.v1",
+  "require_primary_digest_in_regular_container": true,
+  "allowed_added_capabilities": ["NET_BIND_SERVICE"],
+  "reject_run_as_user_zero": true,
+  "validate_seccomp_localhost_profile": true,
+  "claim_boundary": "Static Kubernetes manifest security hardening only. Passing this gate does not prove Kubernetes API admission, scheduler placement, runtime health, network reachability, deployment, production authorization, or independent validation."
+}
