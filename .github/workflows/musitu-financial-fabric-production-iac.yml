@@ -52,12 +52,20 @@ jobs:
           release_image='sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
           rollback_image='sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc'
 
+          evidence_bundle="$RUNNER_TEMP/target-evidence-bundle-ci.bin"
+          printf '%s' 'TEST-ONLY-TARGET-EVIDENCE-BUNDLE' > "$evidence_bundle"
+          evidence_bundle_digest="$(sha256sum "$evidence_bundle" | awk '{print $1}')"
+
           deployment="$RUNNER_TEMP/production-deployment-evidence-ci.json"
           cat > "$deployment" <<JSON
           {
             "target_environment_id": "test-only-production-target",
             "verified_at": "2026-01-01T00:00:00Z",
             "expires_at": "2099-01-01T00:00:00Z",
+            "evidence_bundle": {
+              "path": "$evidence_bundle",
+              "sha256": "$evidence_bundle_digest"
+            },
             "release": {
               "commit_sha": "$release_commit",
               "image_digest": "$release_image",
@@ -235,4 +243,35 @@ jobs:
           fi
           grep -q 'independent network/provider/settlement kill controls' "$RUNNER_TEMP/nonindependent-kill.log"
 
-          echo 'PASS: IaC fail-closed guards require both exact external authorization and exact target-deployment evidence'
+          tampered_bundle="$RUNNER_TEMP/target-evidence-bundle-tampered-ci.bin"
+          cp "$evidence_bundle" "$tampered_bundle"
+          printf '%s' '-TAMPERED' >> "$tampered_bundle"
+          bad_bundle_deployment="$RUNNER_TEMP/production-deployment-bad-bundle-ci.json"
+          python - "$deployment" "$bad_bundle_deployment" "$tampered_bundle" <<'PY'
+          import json, sys
+          source, target, bundle_path = sys.argv[1], sys.argv[2], sys.argv[3]
+          data = json.load(open(source))
+          data['evidence_bundle']['path'] = bundle_path
+          json.dump(data, open(target, 'w'), sort_keys=True)
+          PY
+          bad_bundle_deployment_digest="$(sha256sum "$bad_bundle_deployment" | awk '{print $1}')"
+          if tofu -chdir=infra plan -input=false -lock=false -refresh=false \
+            -var='environment=production' \
+            -var='production_mode=pilot' \
+            -var='live_funds_enabled=true' \
+            -var="authorization_manifest_path=$manifest" \
+            -var="authorization_manifest_sha256=$digest" \
+            -var="deployment_evidence_manifest_path=$bad_bundle_deployment" \
+            -var="deployment_evidence_manifest_sha256=$bad_bundle_deployment_digest" \
+            -var="release_commit=$release_commit" \
+            -var="release_image_digest=$release_image" \
+            -var='production_enabled_rails=["ecocash"]' \
+            -var='production_enabled_currencies=["USD"]' \
+            -var='max_single_payment_minor=1000' \
+            > "$RUNNER_TEMP/tampered-evidence-bundle.log" 2>&1; then
+            echo 'FAIL: tampered target evidence bundle was accepted'
+            exit 1
+          fi
+          grep -q 'target evidence bundle' "$RUNNER_TEMP/tampered-evidence-bundle.log"
+
+          echo 'PASS: IaC fail-closed guards require exact external authorization, target-deployment evidence, and target evidence-bundle integrity'
