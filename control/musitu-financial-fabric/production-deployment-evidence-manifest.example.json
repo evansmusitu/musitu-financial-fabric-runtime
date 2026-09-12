@@ -15,49 +15,59 @@
   "evidence": {
     "dark_deployment": {
       "status": "pending",
-      "evidence_ref": ""
+      "evidence_ref": "",
+      "evidence_sha256": ""
     },
     "required_runtime_health": {
       "status": "pending",
-      "evidence_ref": ""
+      "evidence_ref": "",
+      "evidence_sha256": ""
     },
     "monitoring_alerting": {
       "status": "pending",
-      "evidence_ref": ""
+      "evidence_ref": "",
+      "evidence_sha256": ""
     },
     "postgres_backup_restore": {
       "status": "pending",
-      "evidence_ref": ""
+      "evidence_ref": "",
+      "evidence_sha256": ""
     },
     "tigerbeetle_recovery": {
       "status": "pending",
-      "evidence_ref": ""
+      "evidence_ref": "",
+      "evidence_sha256": ""
     },
     "provider_reconciliation": {
       "status": "pending",
-      "evidence_ref": ""
+      "evidence_ref": "",
+      "evidence_sha256": ""
     },
     "activation_rollback_drill": {
       "status": "pending",
-      "evidence_ref": ""
+      "evidence_ref": "",
+      "evidence_sha256": ""
     }
   },
   "independent_kill_controls": {
     "network": {
       "status": "pending",
       "independent_of_application": false,
-      "evidence_ref": ""
+      "evidence_ref": "",
+      "evidence_sha256": ""
     },
     "provider": {
       "status": "pending",
       "independent_of_application": false,
-      "evidence_ref": ""
+      "evidence_ref": "",
+      "evidence_sha256": ""
     },
     "settlement": {
       "status": "pending",
       "independent_of_application": false,
-      "evidence_ref": ""
+      "evidence_ref": "",
+      "evidence_sha256": ""
     }
   },
-  "notes": "Example structure only. The evidence bundle must contain retained target-environment drill/control evidence and its exact bytes must match evidence_bundle.sha256. A matching hash proves integrity only; it does not create, infer, or self-approve regulator, sponsor-bank, rail-provider, data-protection, independent-security, card/network/custody, or independent kill-control authorization."
+  "notes": "Example structure only. For every deployment/control evidence row and every independent kill-control row, retain the exact target-side evidence bytes, record their mounted evidence_ref path and SHA-256 in evidence_sha256, and move status from pending only after the stated control genuinely passes. The aggregate evidence bundle remains separately byte-pinned. Matching hashes prove retained-byte integrity only; they do not create, infer, or self-approve regulator, sponsor-bank, rail-provider, data-protection, independent-security, card/network/custody, production, or independent kill-control authorization."
 }

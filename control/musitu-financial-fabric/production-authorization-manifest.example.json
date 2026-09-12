@@ -11,11 +11,11 @@
     "max_single_payment_minor": 100000
   },
   "evidence": {
-    "regulator": {"status": "pending", "evidence_ref": ""},
-    "sponsor_bank": {"status": "pending", "evidence_ref": ""},
-    "data_protection": {"status": "pending", "evidence_ref": ""},
-    "independent_security": {"status": "pending", "evidence_ref": ""},
-    "rail_provider": {"status": "pending", "evidence_ref": ""}
+    "regulator": {"status": "pending", "evidence_ref": "", "evidence_sha256": ""},
+    "sponsor_bank": {"status": "pending", "evidence_ref": "", "evidence_sha256": ""},
+    "data_protection": {"status": "pending", "evidence_ref": "", "evidence_sha256": ""},
+    "independent_security": {"status": "pending", "evidence_ref": "", "evidence_sha256": ""},
+    "rail_provider": {"status": "pending", "evidence_ref": "", "evidence_sha256": ""}
   },
-  "notes": "Example structure only. Retain the authentic external approval documents as a dedicated read-only evidence bundle, record its exact mounted path and SHA-256, replace every pending field and the expiry, then pin this manifest. Matching hashes prove byte integrity only; they do not prove issuer authenticity or create authorization. Never commit credentials or confidential authorization material."
+  "notes": "Example structure only. Retain each authentic external approval document as immutable mounted evidence, record that row's exact evidence_ref path and SHA-256 in evidence_sha256, retain the dedicated read-only aggregate evidence bundle and record its exact path/SHA-256, replace every pending status only after genuine approval, set the expiry, then pin this manifest. Matching hashes prove retained-byte integrity only; they do not prove issuer authenticity or create authorization. Never commit credentials or confidential authorization material."
 }
