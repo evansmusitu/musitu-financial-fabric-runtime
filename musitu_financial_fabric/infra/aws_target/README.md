@@ -46,7 +46,7 @@ It does **not** configure PostgreSQL workload ingress. That is added only when t
 
 It does **not** create or infer EcoCash credentials, regulatory approval, bank authorization, production secrets, customer data, or live-funds permission.
 
-It does **not** define `MUSITU_LIVE_FUNDS_ENABLED=true`. The target remains a dark/shadow environment until every external and target-evidence gate genuinely passes.
+It does **not** enable the MUSITU live-funds flag. The target remains a dark/shadow environment until every external and target-evidence gate genuinely passes.
 
 ## Validation without AWS credentials
 
