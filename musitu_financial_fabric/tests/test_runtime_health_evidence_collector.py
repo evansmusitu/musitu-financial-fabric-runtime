@@ -5,6 +5,7 @@ import importlib.util
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -17,6 +18,11 @@ spec.loader.exec_module(collector)
 COMMIT = "a" * 40
 IMAGE = "sha256:" + "b" * 64
 TARGET = "prod-zimbabwe-primary-01"
+TEST_COMPONENTS = (
+    SimpleNamespace(key="postgres", required=True, kind="runtime"),
+    SimpleNamespace(key="tigerbeetle", required=True, kind="runtime"),
+    SimpleNamespace(key="protocol", required=True, kind="protocol"),
+)
 
 
 def _healthy_rows():
@@ -34,6 +40,7 @@ def test_build_evidence_passes_only_exact_healthy_runtime_inventory():
         image_digest=IMAGE,
         probe_result={"all_required_runtime_healthy": True, "components": _healthy_rows()},
         observed_at=datetime(2026, 9, 12, 7, 0, tzinfo=timezone.utc),
+        components=TEST_COMPONENTS,
     )
     assert evidence["result"]["status"] == "passed"
     assert evidence["result"]["all_required_runtime_healthy"] is True
@@ -51,6 +58,7 @@ def test_missing_required_runtime_fails_even_if_probe_summary_claims_healthy():
         commit_sha=COMMIT,
         image_digest=IMAGE,
         probe_result={"all_required_runtime_healthy": True, "components": rows},
+        components=TEST_COMPONENTS,
     )
     assert evidence["result"]["status"] == "failed"
     assert evidence["result"]["missing_required_runtime_keys"] == ["tigerbeetle"]
@@ -64,6 +72,7 @@ def test_unhealthy_required_runtime_fails_closed():
         commit_sha=COMMIT,
         image_digest=IMAGE,
         probe_result={"all_required_runtime_healthy": False, "components": rows},
+        components=TEST_COMPONENTS,
     )
     assert evidence["result"]["status"] == "failed"
     assert evidence["result"]["all_required_runtime_healthy"] is False
@@ -76,6 +85,7 @@ def test_duplicate_required_runtime_fails_closed():
         commit_sha=COMMIT,
         image_digest=IMAGE,
         probe_result={"all_required_runtime_healthy": True, "components": rows},
+        components=TEST_COMPONENTS,
     )
     assert evidence["result"]["status"] == "failed"
     assert evidence["result"]["duplicate_required_runtime_keys"] == ["postgres"]
@@ -96,6 +106,7 @@ def test_identity_inputs_are_strict(target, commit, image):
             commit_sha=commit,
             image_digest=image,
             probe_result={"all_required_runtime_healthy": True, "components": _healthy_rows()},
+            components=TEST_COMPONENTS,
         )
 
 
@@ -106,6 +117,7 @@ def test_persist_evidence_hash_and_fragment_are_consistent(tmp_path):
         image_digest=IMAGE,
         probe_result={"all_required_runtime_healthy": True, "components": _healthy_rows()},
         observed_at=datetime(2026, 9, 12, 7, 0, tzinfo=timezone.utc),
+        components=TEST_COMPONENTS,
     )
     output = tmp_path / "health.json"
     digest, sha_path, fragment_path = collector.persist_evidence(output, evidence)

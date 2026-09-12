@@ -1,4 +1,3 @@
-purpose=exact-head full seven-gate revalidation after target runtime health evidence collector
-collector_commit=3b1bcaae6b346381d0dce145b2b9d67c380573fd
+purpose=exact-head full revalidation after collector unit-test fixture correction
 runtime_effect=none
 live_funds_authorization=none
