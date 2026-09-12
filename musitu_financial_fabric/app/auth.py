@@ -12,6 +12,7 @@ from .webhook import WebhookReplayConflict, begin_webhook_delivery, finish_webho
 
 _PUBLIC_PRODUCTION_PATHS = {"/health", "/ready"}
 _ECOCASH_WEBHOOK_PATH = "/v1/webhooks/ecocash"
+_ISO20022_PACS008_PATH = "/iso20022/pacs008"
 
 
 class RequestBodyTooLarge(ValueError):
@@ -43,6 +44,16 @@ async def _buffer_limited_body(request: Request) -> bytes:
     buffered = bytes(body)
     request._body = buffered
     return buffered
+
+
+async def _invalid_iso20022_utf8_response(request: Request) -> JSONResponse | None:
+    if request.url.path != _ISO20022_PACS008_PATH:
+        return None
+    try:
+        (await request.body()).decode("utf-8")
+    except UnicodeDecodeError:
+        return JSONResponse({"detail": "invalid ISO 20022 UTF-8 payload"}, status_code=400)
+    return None
 
 
 async def _introspect(token: str) -> dict:
@@ -181,6 +192,9 @@ async def _production_ecocash_webhook(request: Request, call_next):
 
 async def production_auth_middleware(request: Request, call_next):
     if not settings.is_production:
+        invalid_iso20022 = await _invalid_iso20022_utf8_response(request)
+        if invalid_iso20022 is not None:
+            return invalid_iso20022
         return await call_next(request)
     try:
         await _buffer_limited_body(request)
@@ -191,6 +205,9 @@ async def production_auth_middleware(request: Request, call_next):
     except Exception:
         return JSONResponse({"detail": "production request body guard unavailable"}, status_code=503)
 
+    invalid_iso20022 = await _invalid_iso20022_utf8_response(request)
+    if invalid_iso20022 is not None:
+        return invalid_iso20022
     if request.url.path == _ECOCASH_WEBHOOK_PATH:
         return await _production_ecocash_webhook(request, call_next)
     if request.url.path in _PUBLIC_PRODUCTION_PATHS:
