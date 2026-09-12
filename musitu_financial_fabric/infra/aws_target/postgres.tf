@@ -44,10 +44,10 @@ resource "aws_db_instance" "metadata" {
   db_subnet_group_name   = aws_db_subnet_group.metadata.name
   vpc_security_group_ids = [aws_security_group.postgres.id]
 
-  backup_retention_period = 35
-  copy_tags_to_snapshot    = true
-  deletion_protection      = true
-  skip_final_snapshot      = false
+  backup_retention_period   = 35
+  copy_tags_to_snapshot     = true
+  deletion_protection       = true
+  skip_final_snapshot       = false
   final_snapshot_identifier = "${local.cluster_name}-postgres-final"
 
   auto_minor_version_upgrade = false
