@@ -16,6 +16,21 @@ SELF_TEST_EVIDENCE = TARGET / ".validation" / "supply-persistence-profile-self-t
 EXPECTED_BASE_COMMIT = "80c72d9f711561dd46337d7286ee7bfb2bb5e658"
 OCI_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
+PROVENANCE_DESCRIPTOR_SCHEMA = "mff.image-provenance-verification.v1"
+DESCRIPTOR_BINDINGS = [
+    "runtime_key",
+    "authoritative_runtime_base_commit",
+    "image_digest",
+    "provenance_kind",
+    "verified_at",
+    "method",
+    "verifier",
+    "trust_model",
+    "artifact_source_sha256",
+    "source_identity_sha256",
+    "build_recipe_sha256",
+    "builder_identity_sha256",
+]
 
 
 def _load(path: Path) -> Any:
@@ -47,6 +62,17 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _canonical_sha256(value: object) -> str:
+    encoded = json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _offset_aware_timestamp(value: object) -> bool:
@@ -114,6 +140,73 @@ def _common_binding_errors(
     return errors
 
 
+def _provenance_descriptor_errors(
+    key: str,
+    payload: dict[str, Any],
+    section: dict[str, Any],
+) -> list[str]:
+    errors: list[str] = []
+    verification = payload.get("verification")
+    errors.extend(_byte_bound_evidence_errors(verification, label="verification"))
+    if not isinstance(verification, dict):
+        return errors
+
+    evidence_path = _repo_file(verification.get("evidence_ref"))
+    if evidence_path is None:
+        return errors
+    try:
+        descriptor = _load(evidence_path)
+    except Exception as exc:
+        errors.append(
+            f"verification evidence must be a JSON provenance descriptor ({type(exc).__name__})"
+        )
+        return errors
+    if not isinstance(descriptor, dict):
+        return errors + ["verification evidence descriptor root must be an object"]
+    if descriptor.get("schema_version") != section.get("verification_descriptor_schema_version"):
+        errors.append("verification descriptor schema_version is invalid")
+    required = section.get("verification_descriptor_required_bindings")
+    if not isinstance(required, list) or required != DESCRIPTOR_BINDINGS:
+        errors.append("provenance policy verification descriptor bindings are invalid")
+        return errors
+    for field in required:
+        if field not in descriptor:
+            errors.append(f"verification descriptor missing {field}")
+
+    expected_direct = {
+        "runtime_key": key,
+        "authoritative_runtime_base_commit": EXPECTED_BASE_COMMIT,
+        "image_digest": payload.get("image_digest"),
+        "provenance_kind": payload.get("provenance_kind"),
+        "verified_at": payload.get("verified_at"),
+        "method": verification.get("method"),
+        "verifier": verification.get("verifier"),
+        "trust_model": verification.get("trust_model"),
+    }
+    for field, expected in expected_direct.items():
+        if descriptor.get(field) != expected:
+            errors.append(f"verification descriptor {field} does not match provenance profile")
+
+    hashed_bindings = {
+        "artifact_source_sha256": payload.get("artifact_source"),
+        "source_identity_sha256": payload.get("source_identity"),
+        "build_recipe_sha256": payload.get("build_recipe"),
+        "builder_identity_sha256": payload.get("builder_identity"),
+    }
+    for field, source_value in hashed_bindings.items():
+        try:
+            expected = _canonical_sha256(source_value)
+        except (TypeError, ValueError):
+            errors.append(f"provenance profile {field.removesuffix('_sha256')} is not canonical-JSON hashable")
+            continue
+        declared = str(descriptor.get(field, "")).strip().lower()
+        if not SHA256_HEX.fullmatch(declared):
+            errors.append(f"verification descriptor {field} is missing or malformed")
+        elif declared != expected:
+            errors.append(f"verification descriptor {field} does not match provenance profile")
+    return errors
+
+
 def _provenance_errors(
     key: str,
     row: dict[str, Any],
@@ -140,7 +233,7 @@ def _provenance_errors(
         errors.append("provenance profile must not rely on a mutable tag only")
     if not _offset_aware_timestamp(payload.get("verified_at")):
         errors.append("verified_at must be an offset-aware ISO-8601 timestamp")
-    errors.extend(_byte_bound_evidence_errors(payload.get("verification"), label="verification"))
+    errors.extend(_provenance_descriptor_errors(key, payload, section))
     return errors
 
 
@@ -204,7 +297,7 @@ def _policy_errors(policy: object) -> list[str]:
     errors: list[str] = []
     if not isinstance(policy, dict):
         return ["supply/persistence policy root must be an object"]
-    if policy.get("schema_version") != "mff.supply-persistence-profile-policy.v1":
+    if policy.get("schema_version") != "mff.supply-persistence-profile-policy.v2":
         errors.append("policy schema_version is invalid")
     if policy.get("authoritative_runtime_base_commit") != EXPECTED_BASE_COMMIT:
         errors.append("policy is not anchored to the sealed runtime release")
@@ -218,6 +311,10 @@ def _policy_errors(policy: object) -> list[str]:
         kinds = provenance.get("allowed_provenance_kinds")
         if set(kinds or []) != {"first_party_build", "upstream_verified"}:
             errors.append("provenance allowed kind set is invalid")
+        if provenance.get("verification_descriptor_schema_version") != PROVENANCE_DESCRIPTOR_SCHEMA:
+            errors.append("provenance verification descriptor schema is invalid")
+        if provenance.get("verification_descriptor_required_bindings") != DESCRIPTOR_BINDINGS:
+            errors.append("provenance verification descriptor bindings are invalid")
     if not isinstance(persistence, dict):
         errors.append("persistence_profile policy is missing")
     else:
@@ -234,124 +331,190 @@ def _self_test() -> list[str]:
     if failures:
         return failures
 
-    evidence_ref = str(SELF_TEST_EVIDENCE.relative_to(ROOT)).replace("\\", "/")
-    evidence_sha = _sha256(SELF_TEST_EVIDENCE)
+    persistence_evidence_ref = str(SELF_TEST_EVIDENCE.relative_to(ROOT)).replace("\\", "/")
+    persistence_evidence_sha = _sha256(SELF_TEST_EVIDENCE)
     digest = "sha256:" + ("1" * 64)
     row = {
         "image_digest": digest,
-        "backup_restore_profile": evidence_ref,
+        "backup_restore_profile": persistence_evidence_ref,
     }
-    evidence = {
+    persistence_evidence = {
         "status": "passed",
         "method": "validator-self-test",
         "verifier": "validator-self-test",
         "trust_model": "synthetic-self-test-only",
-        "evidence_ref": evidence_ref,
-        "evidence_sha256": evidence_sha,
-    }
-    provenance = {
-        "schema_version": "mff.image-provenance-profile.v1",
-        "runtime_key": "self-test",
-        "authoritative_runtime_base_commit": EXPECTED_BASE_COMMIT,
-        "image_digest": digest,
-        "provenance_kind": "first_party_build",
-        "artifact_source": {"kind": "synthetic-self-test"},
-        "source_identity": {"kind": "synthetic-self-test"},
-        "build_recipe": {"kind": "synthetic-self-test"},
-        "builder_identity": {"kind": "synthetic-self-test"},
-        "mutable_tag_only": False,
-        "verified_at": "2026-09-12T00:00:00+00:00",
-        "verification": evidence,
-    }
-    persistence_stateful = {
-        "schema_version": "mff.persistence-profile.v1",
-        "runtime_key": "self-test",
-        "authoritative_runtime_base_commit": EXPECTED_BASE_COMMIT,
-        "image_digest": digest,
-        "environment_id": "self-test-target",
-        "classification": "stateful",
-        "storage": {"kind": "synthetic-self-test"},
-        "durability": "synthetic-self-test",
-        "encryption_at_rest": "synthetic-self-test",
-        "retention": "synthetic-self-test",
-        "backup_restore_profile_ref": evidence_ref,
-        "recovery_objectives": {"source": "synthetic-self-test"},
-        "data_integrity_validation": {"source": "synthetic-self-test"},
-        "target_validation": evidence,
-    }
-    persistence_stateless = {
-        "schema_version": "mff.persistence-profile.v1",
-        "runtime_key": "self-test",
-        "authoritative_runtime_base_commit": EXPECTED_BASE_COMMIT,
-        "image_digest": digest,
-        "environment_id": "self-test-target",
-        "classification": "stateless",
-        "ephemeral_state_only": True,
-        "reconstruction_source": {"kind": "synthetic-self-test"},
-        "rationale": "synthetic self-test only",
-        "target_validation": evidence,
+        "evidence_ref": persistence_evidence_ref,
+        "evidence_sha256": persistence_evidence_sha,
     }
 
-    if _provenance_errors("self-test", row, provenance, policy):
-        failures.append("valid synthetic provenance profile was rejected")
-    if _persistence_errors("self-test", row, persistence_stateful, policy):
-        failures.append("valid synthetic stateful persistence profile was rejected")
-    if _persistence_errors("self-test", row, persistence_stateless, policy):
-        failures.append("valid synthetic stateless persistence profile was rejected")
+    artifact_source = {"kind": "synthetic-self-test", "ref": "artifact"}
+    source_identity = {"kind": "synthetic-self-test", "ref": "source"}
+    build_recipe = {"kind": "synthetic-self-test", "ref": "recipe"}
+    builder_identity = {"kind": "synthetic-self-test", "ref": "builder"}
+    verified_at = "2026-09-12T00:00:00+00:00"
+    method = "validator-self-test"
+    verifier = "validator-self-test"
+    trust_model = "synthetic-self-test-only"
 
-    bad = json.loads(json.dumps(provenance))
-    bad["mutable_tag_only"] = True
-    if not _provenance_errors("self-test", row, bad, policy):
-        failures.append("provenance self-test failed to reject mutable-tag-only evidence")
+    descriptor_path = ROOT / ".mff-provenance-verification-self-test.tmp.json"
 
-    bad = json.loads(json.dumps(provenance))
-    bad["verification"]["status"] = "pending"
-    if not _provenance_errors("self-test", row, bad, policy):
-        failures.append("provenance self-test failed to reject unverified evidence")
+    def descriptor_payload() -> dict[str, Any]:
+        return {
+            "schema_version": PROVENANCE_DESCRIPTOR_SCHEMA,
+            "runtime_key": "self-test",
+            "authoritative_runtime_base_commit": EXPECTED_BASE_COMMIT,
+            "image_digest": digest,
+            "provenance_kind": "first_party_build",
+            "verified_at": verified_at,
+            "method": method,
+            "verifier": verifier,
+            "trust_model": trust_model,
+            "artifact_source_sha256": _canonical_sha256(artifact_source),
+            "source_identity_sha256": _canonical_sha256(source_identity),
+            "build_recipe_sha256": _canonical_sha256(build_recipe),
+            "builder_identity_sha256": _canonical_sha256(builder_identity),
+        }
 
-    bad = json.loads(json.dumps(provenance))
-    bad["verification"]["evidence_sha256"] = "0" * 64
-    if not _provenance_errors("self-test", row, bad, policy):
-        failures.append("provenance self-test failed to reject evidence hash mismatch")
+    def write_descriptor(value: dict[str, Any]) -> str:
+        descriptor_path.write_text(
+            json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        return _sha256(descriptor_path)
 
-    bad = json.loads(json.dumps(provenance))
-    bad["verified_at"] = "2026-09-12T00:00:00"
-    if not _provenance_errors("self-test", row, bad, policy):
-        failures.append("provenance self-test failed to reject timezone-less verification time")
+    base_descriptor = descriptor_payload()
+    try:
+        descriptor_sha = write_descriptor(base_descriptor)
+        descriptor_ref = descriptor_path.relative_to(ROOT).as_posix()
+        provenance_evidence = {
+            "status": "passed",
+            "method": method,
+            "verifier": verifier,
+            "trust_model": trust_model,
+            "evidence_ref": descriptor_ref,
+            "evidence_sha256": descriptor_sha,
+        }
+        provenance = {
+            "schema_version": "mff.image-provenance-profile.v1",
+            "runtime_key": "self-test",
+            "authoritative_runtime_base_commit": EXPECTED_BASE_COMMIT,
+            "image_digest": digest,
+            "provenance_kind": "first_party_build",
+            "artifact_source": artifact_source,
+            "source_identity": source_identity,
+            "build_recipe": build_recipe,
+            "builder_identity": builder_identity,
+            "mutable_tag_only": False,
+            "verified_at": verified_at,
+            "verification": provenance_evidence,
+        }
+        persistence_stateful = {
+            "schema_version": "mff.persistence-profile.v1",
+            "runtime_key": "self-test",
+            "authoritative_runtime_base_commit": EXPECTED_BASE_COMMIT,
+            "image_digest": digest,
+            "environment_id": "self-test-target",
+            "classification": "stateful",
+            "storage": {"kind": "synthetic-self-test"},
+            "durability": "synthetic-self-test",
+            "encryption_at_rest": "synthetic-self-test",
+            "retention": "synthetic-self-test",
+            "backup_restore_profile_ref": persistence_evidence_ref,
+            "recovery_objectives": {"source": "synthetic-self-test"},
+            "data_integrity_validation": {"source": "synthetic-self-test"},
+            "target_validation": persistence_evidence,
+        }
+        persistence_stateless = {
+            "schema_version": "mff.persistence-profile.v1",
+            "runtime_key": "self-test",
+            "authoritative_runtime_base_commit": EXPECTED_BASE_COMMIT,
+            "image_digest": digest,
+            "environment_id": "self-test-target",
+            "classification": "stateless",
+            "ephemeral_state_only": True,
+            "reconstruction_source": {"kind": "synthetic-self-test"},
+            "rationale": "synthetic self-test only",
+            "target_validation": persistence_evidence,
+        }
 
-    bad = json.loads(json.dumps(persistence_stateless))
-    bad["ephemeral_state_only"] = False
-    if not _persistence_errors("self-test", row, bad, policy):
-        failures.append("persistence self-test failed to reject false statelessness assertion")
+        if _provenance_errors("self-test", row, provenance, policy):
+            failures.append("valid synthetic provenance profile was rejected")
+        if _persistence_errors("self-test", row, persistence_stateful, policy):
+            failures.append("valid synthetic stateful persistence profile was rejected")
+        if _persistence_errors("self-test", row, persistence_stateless, policy):
+            failures.append("valid synthetic stateless persistence profile was rejected")
 
-    bad = json.loads(json.dumps(persistence_stateful))
-    bad["backup_restore_profile_ref"] = "missing/recovery-profile.json"
-    if not _persistence_errors("self-test", row, bad, policy):
-        failures.append("persistence self-test failed to reject mismatched recovery reference")
+        bad = json.loads(json.dumps(provenance))
+        bad["mutable_tag_only"] = True
+        if not _provenance_errors("self-test", row, bad, policy):
+            failures.append("provenance self-test failed to reject mutable-tag-only evidence")
 
-    bad = json.loads(json.dumps(persistence_stateful))
-    del bad["storage"]
-    if not _persistence_errors("self-test", row, bad, policy):
-        failures.append("persistence self-test failed to reject missing stateful storage evidence")
+        bad = json.loads(json.dumps(provenance))
+        bad["verification"]["status"] = "pending"
+        if not _provenance_errors("self-test", row, bad, policy):
+            failures.append("provenance self-test failed to reject unverified evidence")
 
-    for payload, checker, label in (
-        (provenance, _provenance_errors, "provenance"),
-        (persistence_stateful, _persistence_errors, "persistence"),
-    ):
-        bad = json.loads(json.dumps(payload))
-        bad["runtime_key"] = "wrong-runtime"
-        if not checker("self-test", row, bad, policy):
-            failures.append(f"{label} self-test failed to reject runtime drift")
-        bad = json.loads(json.dumps(payload))
-        bad["authoritative_runtime_base_commit"] = "0" * 40
-        if not checker("self-test", row, bad, policy):
-            failures.append(f"{label} self-test failed to reject release drift")
-        bad = json.loads(json.dumps(payload))
-        bad["image_digest"] = "sha256:" + ("2" * 64)
-        if not checker("self-test", row, bad, policy):
-            failures.append(f"{label} self-test failed to reject image drift")
+        bad = json.loads(json.dumps(provenance))
+        bad["verification"]["evidence_sha256"] = "0" * 64
+        if not _provenance_errors("self-test", row, bad, policy):
+            failures.append("provenance self-test failed to reject evidence hash mismatch")
 
-    return failures
+        bad = json.loads(json.dumps(provenance))
+        bad["verified_at"] = "2026-09-12T00:00:00"
+        if not _provenance_errors("self-test", row, bad, policy):
+            failures.append("provenance self-test failed to reject timezone-less verification time")
+
+        descriptor_mutations = [
+            ("image digest", "image_digest", "sha256:" + ("2" * 64)),
+            ("sealed release", "authoritative_runtime_base_commit", "0" * 40),
+            ("provenance kind", "provenance_kind", "upstream_verified"),
+            ("artifact source hash", "artifact_source_sha256", "0" * 64),
+            ("verification method", "method", "different-method"),
+        ]
+        for label, field, value in descriptor_mutations:
+            mutated = dict(base_descriptor)
+            mutated[field] = value
+            bad = json.loads(json.dumps(provenance))
+            bad["verification"]["evidence_sha256"] = write_descriptor(mutated)
+            if not _provenance_errors("self-test", row, bad, policy):
+                failures.append(f"provenance self-test failed to reject descriptor {label} drift")
+        write_descriptor(base_descriptor)
+
+        bad = json.loads(json.dumps(persistence_stateless))
+        bad["ephemeral_state_only"] = False
+        if not _persistence_errors("self-test", row, bad, policy):
+            failures.append("persistence self-test failed to reject false statelessness assertion")
+
+        bad = json.loads(json.dumps(persistence_stateful))
+        bad["backup_restore_profile_ref"] = "missing/recovery-profile.json"
+        if not _persistence_errors("self-test", row, bad, policy):
+            failures.append("persistence self-test failed to reject mismatched recovery reference")
+
+        bad = json.loads(json.dumps(persistence_stateful))
+        del bad["storage"]
+        if not _persistence_errors("self-test", row, bad, policy):
+            failures.append("persistence self-test failed to reject missing stateful storage evidence")
+
+        for payload, checker, label in (
+            (provenance, _provenance_errors, "provenance"),
+            (persistence_stateful, _persistence_errors, "persistence"),
+        ):
+            bad = json.loads(json.dumps(payload))
+            bad["runtime_key"] = "wrong-runtime"
+            if not checker("self-test", row, bad, policy):
+                failures.append(f"{label} self-test failed to reject runtime drift")
+            bad = json.loads(json.dumps(payload))
+            bad["authoritative_runtime_base_commit"] = "0" * 40
+            if not checker("self-test", row, bad, policy):
+                failures.append(f"{label} self-test failed to reject release drift")
+            bad = json.loads(json.dumps(payload))
+            bad["image_digest"] = "sha256:" + ("2" * 64)
+            if not checker("self-test", row, bad, policy):
+                failures.append(f"{label} self-test failed to reject image drift")
+
+        return failures
+    finally:
+        descriptor_path.unlink(missing_ok=True)
 
 
 def _contract_errors() -> tuple[list[str], tuple[int, int], tuple[int, int]]:
@@ -428,7 +591,11 @@ def main() -> int:
             for failure in failures:
                 print(f"SELF-TEST FAILURE: {failure}")
             return 4
-        print("PASS: supply/persistence validator rejects mutable-tag-only provenance, unverified or unbound evidence, false statelessness, and mismatched recovery references")
+        print(
+            "PASS: supply/persistence validator rejects mutable-tag-only provenance, "
+            "byte-valid but semantically unbound provenance descriptors, unverified evidence, "
+            "false statelessness, and mismatched recovery references"
+        )
         return 0
 
     errors, provenance, persistence = _contract_errors()
@@ -438,7 +605,11 @@ def main() -> int:
         return 2
     print(f"PASS: provenance_ref: validated {provenance[0]} resolved profiles; {provenance[1]} remain unresolved")
     print(f"PASS: persistence_profile: validated {persistence[0]} resolved profiles; {persistence[1]} remain unresolved")
-    print("BOUNDARY: no signed provenance, registry publication, Sigstore/Cosign verification, stateful/stateless classification, storage design, or target execution is inferred from unresolved profiles")
+    print(
+        "BOUNDARY: no signed provenance, registry publication, Sigstore/Cosign verification, "
+        "issuer authenticity, stateful/stateless classification, storage design, or target execution "
+        "is inferred from unresolved profiles"
+    )
     return 0
 
 
