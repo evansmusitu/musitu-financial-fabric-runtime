@@ -135,9 +135,11 @@
       "status": "partial",
       "evidence_refs": [
         "musitu_financial_fabric/app/config.py",
-        "docs/production-readiness/CONTROL_MATRIX.md"
+        "docs/production-readiness/CONTROL_MATRIX.md",
+        ".github/workflows/mff-internal-security-qualification.yml",
+        "docs/internal-security/SECRET_SCAN_ADJUDICATION_20260912.json"
       ],
-      "residual": "A dedicated repository-wide secret-scanner evidence artifact and real OpenBao/SPIRE target integration are not yet proven on this branch."
+      "residual": "Repository-wide detect-secrets scanning is internally qualified with an exact reviewed-candidate adjudication set; real OpenBao/SPIRE target integration and target secret-delivery evidence remain unproven."
     },
     {
       "id": "MFF-T10",
