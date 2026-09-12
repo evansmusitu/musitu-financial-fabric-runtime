@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 
 from defusedxml import ElementTree as ET
+from fastapi import HTTPException
 
 
 @dataclass(frozen=True)
@@ -125,15 +126,31 @@ def iso20022_pacs008(xml_body: str) -> NormalizedIntent:
     )
 
 
+def _challenge_fields(amount_minor: int, currency: str, resource: str) -> tuple[int, str, str]:
+    try:
+        amount = _minor_integer(amount_minor, field="amount_minor")
+        if amount <= 0:
+            raise ValueError("amount_minor must be positive")
+        code = _currency(currency)
+        target = str(resource or "").strip()
+        if not target:
+            raise ValueError("resource must be non-empty")
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=f"invalid payment challenge: {exc}") from exc
+    return amount, code, target
+
+
 def mpp_challenge(amount_minor: int, currency: str, resource: str) -> dict:
+    amount, code, target = _challenge_fields(amount_minor, currency, resource)
     return {
         "protocol": "mpp",
         "status": 402,
-        "payment": {"amount_minor": amount_minor, "currency": currency.upper(), "method": "musitu", "resource": resource},
+        "payment": {"amount_minor": amount, "currency": code, "method": "musitu", "resource": target},
     }
 
 
 def x402_challenge(amount_minor: int, currency: str, resource: str) -> dict:
-    payload = {"scheme": "musitu", "amount_minor": amount_minor, "currency": currency.upper(), "resource": resource}
+    amount, code, target = _challenge_fields(amount_minor, currency, resource)
+    payload = {"scheme": "musitu", "amount_minor": amount, "currency": code, "resource": target}
     token = base64.urlsafe_b64encode(json.dumps(payload, separators=(",", ":")).encode()).decode().rstrip("=")
     return {"protocol": "x402", "status": 402, "payment_required": token, "requirements": payload}
