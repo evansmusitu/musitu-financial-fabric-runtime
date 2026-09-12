@@ -5,6 +5,7 @@ on:
     branches: [musitu-financial-fabric-internal-security-qualification-20260912]
     paths:
       - 'musitu_financial_fabric/**'
+      - 'docs/internal-security/**'
       - '.github/workflows/mff-internal-security-qualification.yml'
   workflow_dispatch:
 
@@ -37,6 +38,63 @@ jobs:
 
       - name: Audit pinned Python dependencies
         run: python -m pip_audit -r constraints-ci.txt --progress-spinner off
+
+      - name: Generate CycloneDX dependency SBOM and evidence hashes
+        run: |
+          python -m pip_audit -r constraints-ci.txt --progress-spinner off --format cyclonedx-json --output "$RUNNER_TEMP/mff-python-sbom.cdx.json"
+          python - "$RUNNER_TEMP/mff-python-sbom.cdx.json" <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+          import sys
+
+          sbom_path = Path(sys.argv[1])
+          raw = sbom_path.read_bytes()
+          payload = json.loads(raw)
+          if payload.get("bomFormat") != "CycloneDX":
+              raise SystemExit("SBOM is not CycloneDX")
+          components = payload.get("components") or []
+          if not components:
+              raise SystemExit("SBOM contains no components")
+          lock_raw = Path("constraints-ci.txt").read_bytes()
+          print(f"PASS: CycloneDX SBOM generated with {len(components)} components")
+          print(f"SBOM_SHA256={hashlib.sha256(raw).hexdigest()}")
+          print(f"CONSTRAINTS_SHA256={hashlib.sha256(lock_raw).hexdigest()}")
+          print("BOUNDARY: SBOM is internal dependency evidence, not independent supply-chain certification")
+          PY
+
+      - name: Validate structured internal threat model and evidence references
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          repo = Path.cwd().parent
+          model_path = repo / "docs" / "internal-security" / "THREAT_MODEL_20260912.json"
+          model = json.loads(model_path.read_text(encoding="utf-8"))
+          if model.get("schema_version") != "mff.internal-threat-model.v1":
+              raise SystemExit("unexpected threat-model schema")
+          threats = model.get("threats") or []
+          ids = [row.get("id") for row in threats]
+          if len(threats) < 16 or len(set(ids)) != len(ids) or any(not value for value in ids):
+              raise SystemExit("threat inventory is incomplete or has duplicate/empty IDs")
+          allowed = {"internally_tested", "partial", "open_target", "open_external"}
+          statuses = {row.get("status") for row in threats}
+          if not statuses <= allowed or not {"partial", "open_target", "open_external"} <= statuses:
+              raise SystemExit(f"threat statuses violate fail-closed vocabulary: {sorted(statuses)}")
+          missing = []
+          for threat in threats:
+              refs = threat.get("evidence_refs") or []
+              if not refs:
+                  missing.append(f"{threat.get('id')}: no evidence_refs")
+              for ref in refs:
+                  if not (repo / ref).is_file():
+                      missing.append(f"{threat.get('id')}: missing {ref}")
+          if missing:
+              raise SystemExit("\n".join(missing))
+          print(f"PASS: {len(threats)} internal threat-model rows validated with existing evidence references")
+          print("PASS: open target/external/partial residuals remain explicitly open")
+          PY
 
       - name: Static Python security analysis with exact false-positive adjudication
         run: |

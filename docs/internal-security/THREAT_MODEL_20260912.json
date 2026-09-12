@@ -1,0 +1,221 @@
+{
+  "schema_version": "mff.internal-threat-model.v1",
+  "scope": "MUSITU Financial Fabric application/runtime security qualification on the isolated internal-security branch",
+  "authoritative_release_base": "80c72d9f711561dd46337d7286ee7bfb2bb5e658",
+  "claim_boundary": "MUSITU internal security analysis only. This is not independent validation, certification, regulatory approval, production authorization, or proof of a deployed target.",
+  "assets": [
+    "monetary ledger truth",
+    "payment and settlement state",
+    "merchant and mandate authorization state",
+    "identity and authorization decisions",
+    "rail credentials and webhook authenticity",
+    "audit evidence",
+    "production authorization evidence",
+    "runtime dependency integrity"
+  ],
+  "trust_boundaries": [
+    "public API to MUSITU application",
+    "MUSITU application to identity and authorization services",
+    "MUSITU application to risk service",
+    "MUSITU application to PostgreSQL metadata store",
+    "MUSITU application to TigerBeetle ledger",
+    "MUSITU application to external payment rails",
+    "external rail webhooks to MUSITU callback handling",
+    "CI/build system to runtime artifact",
+    "future Kubernetes target to the 26 required runtimes"
+  ],
+  "status_vocabulary": {
+    "internally_tested": "A control has direct internal code/test or CI evidence on this branch. This does not mean independent or production validation.",
+    "partial": "Some internal controls exist but material residual work remains.",
+    "open_target": "Requires a real explicitly authorized deployment target and target-side evidence.",
+    "open_external": "Requires evidence or authorization from an external authority/provider and cannot be self-attested by MUSITU."
+  },
+  "threats": [
+    {
+      "id": "MFF-T01",
+      "category": "authentication",
+      "threat": "Forged, inactive, incorrectly scoped, or wrong-audience bearer identity is accepted.",
+      "status": "internally_tested",
+      "evidence_refs": [
+        "musitu_financial_fabric/tests/test_production_auth.py",
+        "musitu_financial_fabric/tests/test_production_token_audience.py"
+      ],
+      "residual": "Real identity-provider deployment and operational key/credential controls remain target-dependent."
+    },
+    {
+      "id": "MFF-T02",
+      "category": "authorization",
+      "threat": "An authenticated principal accesses or dispatches a merchant/resource it is not authorized to control.",
+      "status": "internally_tested",
+      "evidence_refs": [
+        "musitu_financial_fabric/tests/test_production_resource_authorization.py",
+        "musitu_financial_fabric/tests/test_production_dispatch_merchant_claim.py",
+        "musitu_financial_fabric/tests/test_production_authorization_audit.py"
+      ],
+      "residual": "Production OpenFGA/OPA policy deployment and target decision telemetry remain target-dependent."
+    },
+    {
+      "id": "MFF-T03",
+      "category": "webhook-authenticity",
+      "threat": "Forged, replayed, duplicated, or cross-rail webhook input mutates payment truth.",
+      "status": "internally_tested",
+      "evidence_refs": [
+        "musitu_financial_fabric/tests/test_ecocash_callback_control.py",
+        "musitu_financial_fabric/tests/test_webhook_rail_isolation.py",
+        "musitu_financial_fabric/tests/test_production_webhook_delivery.py"
+      ],
+      "residual": "Real provider callback contract, credential issuance, and endpoint authorization remain external."
+    },
+    {
+      "id": "MFF-T04",
+      "category": "concurrency-idempotency",
+      "threat": "Concurrent or repeated requests double-apply monetary or authorization state transitions.",
+      "status": "internally_tested",
+      "evidence_refs": [
+        "musitu_financial_fabric/tests/test_payment_idempotency.py",
+        "musitu_financial_fabric/tests/test_audit_concurrency.py",
+        "musitu_financial_fabric/tests/test_postgres_mandate_serialization.py",
+        "musitu_financial_fabric/tests/test_production_settlement_race.py"
+      ],
+      "residual": "Target-scale contention and failure-injection characterization remain open."
+    },
+    {
+      "id": "MFF-T05",
+      "category": "ledger-integrity",
+      "threat": "Metadata/payment state diverges from ledger truth or reconciliation silently accepts mismatch.",
+      "status": "internally_tested",
+      "evidence_refs": [
+        "musitu_financial_fabric/tests/test_monetary_truth_reconciliation.py",
+        "musitu_financial_fabric/tests/test_payment_state_controls.py",
+        "musitu_financial_fabric/tests/test_production_controls.py"
+      ],
+      "residual": "Production-scale TigerBeetle topology, failover, and target reconciliation evidence remain open."
+    },
+    {
+      "id": "MFF-T06",
+      "category": "rail-configuration",
+      "threat": "A production rail is silently enabled, redirected, or operated with an unconfirmed contract/configuration.",
+      "status": "internally_tested",
+      "evidence_refs": [
+        "musitu_financial_fabric/tests/test_ecocash_endpoint_pinning.py",
+        "musitu_financial_fabric/tests/test_production_rail_policy.py",
+        "musitu_financial_fabric/tests/test_production_startup_configuration.py",
+        "musitu_financial_fabric/tests/test_readiness_fail_closed.py"
+      ],
+      "residual": "Provider-issued credentials, approval, and real endpoint contract remain external and must not be inferred."
+    },
+    {
+      "id": "MFF-T07",
+      "category": "parser-input-abuse",
+      "threat": "Oversized or malformed protocol input, including hostile XML constructs, causes unsafe parsing or state corruption.",
+      "status": "internally_tested",
+      "evidence_refs": [
+        "musitu_financial_fabric/tests/test_production_request_limits.py",
+        "musitu_financial_fabric/tests/test_protocol_amount_precision.py",
+        "musitu_financial_fabric/app/protocols/adapters.py"
+      ],
+      "residual": "Broader property/fuzz coverage is still desirable; this status covers current explicit limits and XML hardening only."
+    },
+    {
+      "id": "MFF-T08",
+      "category": "dependency-supply-chain",
+      "threat": "Known-vulnerable or silently drifted Python dependencies enter the qualified runtime.",
+      "status": "internally_tested",
+      "evidence_refs": [
+        "musitu_financial_fabric/constraints-ci.txt",
+        "musitu_financial_fabric/tests/test_production_dependency_lock.py",
+        ".github/workflows/mff-internal-security-qualification.yml"
+      ],
+      "residual": "Internal advisory scanning is not a substitute for external supply-chain attestation or future vulnerability monitoring."
+    },
+    {
+      "id": "MFF-T09",
+      "category": "secret-management",
+      "threat": "Production secrets are embedded in source, broadly exposed, or reused outside a dedicated secret-delivery boundary.",
+      "status": "partial",
+      "evidence_refs": [
+        "musitu_financial_fabric/app/config.py",
+        "docs/production-readiness/CONTROL_MATRIX.md"
+      ],
+      "residual": "A dedicated repository-wide secret-scanner evidence artifact and real OpenBao/SPIRE target integration are not yet proven on this branch."
+    },
+    {
+      "id": "MFF-T10",
+      "category": "container-privilege",
+      "threat": "Application compromise gains unnecessary container/root privilege or mutable runtime dependency drift.",
+      "status": "internally_tested",
+      "evidence_refs": [
+        "deploy/musitu-financial-fabric/Dockerfile",
+        ".github/workflows/mff-production-image.yml"
+      ],
+      "residual": "Cluster admission enforcement and runtime sandboxing require real target evidence."
+    },
+    {
+      "id": "MFF-T11",
+      "category": "kubernetes-network-identity",
+      "threat": "A target deployment permits unintended east-west traffic, weak workload identity, overbroad RBAC, or unmeasured workload placement.",
+      "status": "open_target",
+      "evidence_refs": [
+        "musitu_financial_fabric/stack/required-components.json",
+        "docs/production-readiness/TARGET_RUNTIME_HEALTH_EVIDENCE.md"
+      ],
+      "residual": "No real 26-runtime Kubernetes target has been deployed or target-qualified; static staging cannot close this threat."
+    },
+    {
+      "id": "MFF-T12",
+      "category": "recovery-evidence",
+      "threat": "Backups are unavailable, unauthentic, or unrestorable after failure while the system incorrectly reports readiness.",
+      "status": "partial",
+      "evidence_refs": [
+        ".github/workflows/mff-production-resilience.yml",
+        "docs/production-readiness/CONTROL_MATRIX.md"
+      ],
+      "residual": "CI recovery exercises exist, but target-specific backup, restore, retention, encryption, and disaster-recovery evidence remain open."
+    },
+    {
+      "id": "MFF-T13",
+      "category": "external-authorization",
+      "threat": "MUSITU self-attests provider, bank, regulatory, KYC, or independent-security approval and incorrectly enables live funds.",
+      "status": "open_external",
+      "evidence_refs": [
+        "control/musitu-financial-fabric/production-authorization-manifest.example.json",
+        "musitu_financial_fabric/tests/test_readiness_fail_closed.py"
+      ],
+      "residual": "Required approvals/evidence must come from the applicable external authorities/providers; MUSITU_LIVE_FUNDS_ENABLED remains false."
+    },
+    {
+      "id": "MFF-T14",
+      "category": "audit-operator-abuse",
+      "threat": "Privileged or concurrent operations mutate merchant/payment state without durable, reviewable authorization evidence.",
+      "status": "internally_tested",
+      "evidence_refs": [
+        "musitu_financial_fabric/tests/test_merchant_lifecycle.py",
+        "musitu_financial_fabric/tests/test_production_authorization_audit.py",
+        "musitu_financial_fabric/tests/test_audit_concurrency.py"
+      ],
+      "residual": "Real operator IAM, break-glass procedure, and target audit retention require deployment evidence."
+    },
+    {
+      "id": "MFF-T15",
+      "category": "availability-resource-exhaustion",
+      "threat": "Input volume or dependency latency exhausts resources and causes unsafe degradation.",
+      "status": "partial",
+      "evidence_refs": [
+        "musitu_financial_fabric/tests/test_production_request_limits.py",
+        "musitu_financial_fabric/tests/test_tigerbeetle_operation_timeout.py"
+      ],
+      "residual": "Realistic load, resource, queue, timeout, and recovery benchmarks have not yet been measured on the intended target."
+    },
+    {
+      "id": "MFF-T16",
+      "category": "transport-security",
+      "threat": "Production dependencies or rail calls use insecure or unpinned transport endpoints.",
+      "status": "internally_tested",
+      "evidence_refs": [
+        "musitu_financial_fabric/tests/test_production_transport_security.py",
+        "musitu_financial_fabric/tests/test_ecocash_endpoint_pinning.py"
+      ],
+      "residual": "Certificate lifecycle, target egress enforcement, and provider-side transport configuration require real environment evidence."
+    }
+  ]
+}
