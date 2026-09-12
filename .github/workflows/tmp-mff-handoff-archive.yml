@@ -1,0 +1,35 @@
+name: Temporary MFF handoff archive
+
+on:
+  push:
+    branches: [tmp-mff-handoff-archive-20260912]
+    paths:
+      - '.github/workflows/tmp-mff-handoff-archive.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  archive:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: 80e4df92a9727e79485fbe6430be8344a184e583
+          fetch-depth: 1
+      - name: Create exact runtime snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = '80e4df92a9727e79485fbe6430be8344a184e583'
+          git archive --format=zip --prefix=MUSITU_FINANCIAL_FABRIC_RUNTIME/ -o /tmp/MUSITU_FINANCIAL_FABRIC_RUNTIME_80e4df92.zip HEAD
+          sha256sum /tmp/MUSITU_FINANCIAL_FABRIC_RUNTIME_80e4df92.zip | tee /tmp/MUSITU_FINANCIAL_FABRIC_RUNTIME_80e4df92_SHA256.txt
+          printf '%s\n' 'repository=evansmusitu/musitu-financial-fabric-runtime' 'branch=musitu-financial-fabric-production-readiness' 'commit=80e4df92a9727e79485fbe6430be8344a184e583' > /tmp/RUNTIME_SNAPSHOT_METADATA.txt
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mff-runtime-handoff-snapshot
+          path: |
+            /tmp/MUSITU_FINANCIAL_FABRIC_RUNTIME_80e4df92.zip
+            /tmp/MUSITU_FINANCIAL_FABRIC_RUNTIME_80e4df92_SHA256.txt
+            /tmp/RUNTIME_SNAPSHOT_METADATA.txt
