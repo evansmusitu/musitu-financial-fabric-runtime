@@ -28,6 +28,25 @@ jobs:
       - name: Prove authorization and target-deployment perimeters are enforced
         run: |
           set -euo pipefail
+
+          assert_log_contains() {
+            python - "$1" "$2" <<'PY'
+          import re
+          import sys
+          from pathlib import Path
+
+          log_path, expected = sys.argv[1], sys.argv[2]
+          raw = Path(log_path).read_text(encoding="utf-8", errors="replace")
+          clean = re.sub(r"\x1b\[[0-9;?]*[ -/]*[@-~]", "", raw)
+          clean = re.sub(r"[│╷╵]", " ", clean)
+          normalized = " ".join(clean.split())
+          if expected not in normalized:
+              print(f"FAIL: expected diagnostic not found: {expected!r}")
+              print(clean)
+              raise SystemExit(1)
+          PY
+          }
+
           manifest="$RUNNER_TEMP/production-authorization-ci.json"
           cat > "$manifest" <<'JSON'
           {
@@ -116,7 +135,7 @@ jobs:
             echo 'FAIL: over-broad currency perimeter was accepted'
             exit 1
           fi
-          grep -q 'exact deployment perimeter' "$RUNNER_TEMP/overbroad-currency.log"
+          assert_log_contains "$RUNNER_TEMP/overbroad-currency.log" 'exact deployment perimeter'
 
           if tofu -chdir=infra plan -input=false -lock=false -refresh=false \
             "${common[@]:0:9}" \
@@ -127,7 +146,7 @@ jobs:
             echo 'FAIL: over-broad payment ceiling was accepted'
             exit 1
           fi
-          grep -q 'exact deployment perimeter' "$RUNNER_TEMP/overbroad-limit.log"
+          assert_log_contains "$RUNNER_TEMP/overbroad-limit.log" 'exact deployment perimeter'
 
           if tofu -chdir=infra plan -input=false -lock=false -refresh=false \
             -var='environment=production' \
@@ -146,7 +165,7 @@ jobs:
             echo 'FAIL: mismatched authorization manifest pin was accepted'
             exit 1
           fi
-          grep -q 'byte-pinned' "$RUNNER_TEMP/bad-pin.log"
+          assert_log_contains "$RUNNER_TEMP/bad-pin.log" 'byte-pinned, unexpired external authorization manifest'
 
           expired="$RUNNER_TEMP/production-authorization-expired-ci.json"
           python - "$manifest" "$expired" <<'PY'
@@ -174,7 +193,7 @@ jobs:
             echo 'FAIL: expired authorization manifest was accepted'
             exit 1
           fi
-          grep -q 'unexpired external authorization manifest' "$RUNNER_TEMP/expired.log"
+          assert_log_contains "$RUNNER_TEMP/expired.log" 'unexpired external authorization manifest'
 
           if tofu -chdir=infra plan -input=false -lock=false -refresh=false \
             -var='environment=production' \
@@ -191,7 +210,7 @@ jobs:
             echo 'FAIL: missing target deployment evidence was accepted'
             exit 1
           fi
-          grep -q 'target deployment evidence manifest' "$RUNNER_TEMP/missing-deployment.log"
+          assert_log_contains "$RUNNER_TEMP/missing-deployment.log" 'byte-pinned target deployment evidence manifest'
 
           tampered="$RUNNER_TEMP/production-deployment-tampered-ci.json"
           cp "$deployment" "$tampered"
@@ -213,7 +232,7 @@ jobs:
             echo 'FAIL: tampered target deployment evidence was accepted'
             exit 1
           fi
-          grep -q 'target deployment evidence manifest' "$RUNNER_TEMP/tampered-deployment.log"
+          assert_log_contains "$RUNNER_TEMP/tampered-deployment.log" 'byte-pinned target deployment evidence manifest'
 
           nonindependent="$RUNNER_TEMP/production-deployment-nonindependent-ci.json"
           python - "$deployment" "$nonindependent" <<'PY'
@@ -241,7 +260,7 @@ jobs:
             echo 'FAIL: application-dependent provider kill control was accepted'
             exit 1
           fi
-          grep -q 'independent network/provider/settlement kill controls' "$RUNNER_TEMP/nonindependent-kill.log"
+          assert_log_contains "$RUNNER_TEMP/nonindependent-kill.log" 'independent network/provider/settlement kill controls'
 
           tampered_bundle="$RUNNER_TEMP/target-evidence-bundle-tampered-ci.bin"
           cp "$evidence_bundle" "$tampered_bundle"
@@ -272,6 +291,6 @@ jobs:
             echo 'FAIL: tampered target evidence bundle was accepted'
             exit 1
           fi
-          grep -q 'target evidence bundle' "$RUNNER_TEMP/tampered-evidence-bundle.log"
+          assert_log_contains "$RUNNER_TEMP/tampered-evidence-bundle.log" 'byte-pinned target evidence bundle'
 
           echo 'PASS: IaC fail-closed guards require exact external authorization, target-deployment evidence, and target evidence-bundle integrity'
