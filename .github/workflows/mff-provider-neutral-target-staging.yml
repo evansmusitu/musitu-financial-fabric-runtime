@@ -13,6 +13,7 @@ on:
       - 'musitu_financial_fabric/scripts/validate_identity_secret_profiles.py'
       - 'musitu_financial_fabric/scripts/validate_identity_secret_target_evidence.py'
       - 'musitu_financial_fabric/scripts/validate_operational_profiles.py'
+      - 'musitu_financial_fabric/scripts/validate_operational_selector_semantics.py'
       - 'musitu_financial_fabric/scripts/validate_operational_target_evidence.py'
       - 'musitu_financial_fabric/scripts/validate_supply_persistence_profiles.py'
       - 'musitu_financial_fabric/scripts/validate_persistence_target_evidence.py'
@@ -68,6 +69,10 @@ jobs:
         run: python musitu_financial_fabric/scripts/validate_operational_profiles.py --self-test
       - name: Validate resolved operational profiles
         run: python musitu_financial_fabric/scripts/validate_operational_profiles.py --contract
+      - name: Exercise Kubernetes LabelSelector semantics for operational profiles
+        run: python musitu_financial_fabric/scripts/validate_operational_selector_semantics.py --self-test
+      - name: Validate resolved operational selector semantics
+        run: python musitu_financial_fabric/scripts/validate_operational_selector_semantics.py --contract
       - name: Exercise operational target-evidence association gate
         run: python musitu_financial_fabric/scripts/validate_operational_target_evidence.py --self-test
       - name: Validate resolved operational target-evidence descriptors

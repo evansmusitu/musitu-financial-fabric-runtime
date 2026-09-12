@@ -20,6 +20,7 @@ EXPECTED_SEMANTIC_GATES = (
     ("identity_secret_profiles", "validate_identity_secret_profiles.py"),
     ("identity_secret_target_evidence", "validate_identity_secret_target_evidence.py"),
     ("operational_profiles", "validate_operational_profiles.py"),
+    ("operational_selector_semantics", "validate_operational_selector_semantics.py"),
     ("operational_target_evidence", "validate_operational_target_evidence.py"),
     ("supply_persistence_profiles", "validate_supply_persistence_profiles.py"),
     ("persistence_target_evidence", "validate_persistence_target_evidence.py"),
@@ -113,12 +114,15 @@ def _self_test() -> list[str]:
     failures = _policy_errors()
     if failures:
         return failures
+
     class SyntheticResult:
         returncode = 9
         stdout = "synthetic semantic failure"
         stderr = ""
+
     def failing_runner(*args: Any, **kwargs: Any) -> SyntheticResult:
         return SyntheticResult()
+
     synthetic = _semantic_gate_errors(runner=failing_runner)
     if len(synthetic) != len(EXPECTED_SEMANTIC_GATES):
         failures.append("composition self-test did not fail closed for every synthetic semantic gate failure")

@@ -1,0 +1,11 @@
+{
+  "schema_version": "mff.operational-selector-semantics-policy.v1",
+  "authoritative_runtime_base_commit": "80c72d9f711561dd46337d7286ee7bfb2bb5e658",
+  "source_operational_profile_policy_schema_version": "mff.operational-profile-policy.v1",
+  "allowed_selector_fields": ["matchLabels", "matchExpressions"],
+  "allowed_expression_operators": ["In", "NotIn", "Exists", "DoesNotExist"],
+  "disruption_budget_selector_must_be_nonempty": true,
+  "anti_affinity_empty_selector_allowed": true,
+  "reject_duplicate_expression_values": true,
+  "claim_boundary": "Static Kubernetes LabelSelector semantics only. Passing this gate does not prove selector admission, object creation, pod matching, scheduling, eviction behavior, target deployment, production authorization, or independent validation."
+}
