@@ -24,6 +24,7 @@ This matrix separates software-controlled readiness from external authorization.
 | Target identity binding | Deployment manifest target ID must exactly equal independently configured `MUSITU_TARGET_ENVIRONMENT_ID`; missing or mismatched identity closes live funds |
 | Target activation evidence | Live-funds readiness also requires a separately SHA-256-pinned target-deployment evidence manifest bound to the exact runtime commit, immutable OCI image digest, distinct rollback image digest, and exact authorization-manifest SHA-256 |
 | Target evidence bundle integrity | The target-deployment manifest must name a mounted evidence bundle and SHA-256; runtime and IaC independently fail closed if that exact bundle is absent or its bytes do not match |
+| Required runtime health on target | The target manifest must separately reference evidence that every mandatory runtime component was healthy on the exact immutable target; a generic dark-deployment pass is insufficient |
 | Executed target controls | The target manifest must reference passed dark-deployment, monitoring/alerting, PostgreSQL backup/restore, TigerBeetle recovery, provider reconciliation, and activation/rollback drills |
 | Independent kill controls | The target manifest must reference verified network, provider, and settlement kill controls that are independent of the application flag |
 | Runtime dependency evidence | Production startup accepts only evidence-locked Python/runtime dependency versions |

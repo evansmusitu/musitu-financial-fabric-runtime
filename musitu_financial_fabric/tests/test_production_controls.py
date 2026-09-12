@@ -97,6 +97,7 @@ def _passed_deployment_manifest(
     expires_at: str | None = None,
     provider_kill_independent: bool = True,
     target_environment_id: str = "test-only-production-target",
+    required_runtime_health_status: str = "passed",
 ) -> tuple[str, str]:
     evidence_bundle_path = tmp_path / "target-evidence-bundle.bin"
     evidence_bundle_raw = b"test-only-target-evidence-bundle"
@@ -117,6 +118,10 @@ def _passed_deployment_manifest(
         },
         "evidence": {
             "dark_deployment": {"status": "passed", "evidence_ref": "TEST-ONLY-DARK"},
+            "required_runtime_health": {
+                "status": required_runtime_health_status,
+                "evidence_ref": "TEST-ONLY-REQUIRED-RUNTIME-HEALTH",
+            },
             "monitoring_alerting": {"status": "passed", "evidence_ref": "TEST-ONLY-MONITORING"},
             "postgres_backup_restore": {"status": "passed", "evidence_ref": "TEST-ONLY-POSTGRES-DR"},
             "tigerbeetle_recovery": {"status": "passed", "evidence_ref": "TEST-ONLY-TB-DR"},
@@ -145,6 +150,30 @@ def _passed_deployment_manifest(
     raw = json.dumps(manifest, sort_keys=True).encode()
     path.write_bytes(raw)
     return str(path), hashlib.sha256(raw).hexdigest()
+
+
+def test_required_runtime_health_evidence_is_fail_closed(tmp_path):
+    path, digest = _approved_manifest(tmp_path, funds_scope="production")
+    deployment_path, deployment_digest = _passed_deployment_manifest(
+        tmp_path,
+        authorization_digest=digest,
+        required_runtime_health_status="pending",
+    )
+    cfg = _base_production(
+        production_mode="live",
+        authorization_manifest_path=path,
+        authorization_manifest_sha256=digest,
+        deployment_evidence_manifest_path=deployment_path,
+        deployment_evidence_manifest_sha256=deployment_digest,
+    )
+    result = production_readiness(cfg)
+    assert result["ready_for_live_funds"] is False
+    assert any(
+        row["key"] == "deployment_required_runtime_health" and not row["ok"]
+        for row in result["checks"]
+    )
+    with pytest.raises(ProductionGateError, match="deployment_required_runtime_health"):
+        assert_live_funds_allowed(cfg)
 
 
 def test_live_funds_closed_without_external_evidence():

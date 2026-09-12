@@ -208,6 +208,7 @@ locals {
 
   deployment_required_evidence = [
     "dark_deployment",
+    "required_runtime_health",
     "monitoring_alerting",
     "postgres_backup_restore",
     "tigerbeetle_recovery",

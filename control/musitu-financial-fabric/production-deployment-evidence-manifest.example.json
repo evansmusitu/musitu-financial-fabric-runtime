@@ -17,6 +17,10 @@
       "status": "pending",
       "evidence_ref": ""
     },
+    "required_runtime_health": {
+      "status": "pending",
+      "evidence_ref": ""
+    },
     "monitoring_alerting": {
       "status": "pending",
       "evidence_ref": ""

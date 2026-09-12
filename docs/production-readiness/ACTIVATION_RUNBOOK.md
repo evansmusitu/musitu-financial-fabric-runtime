@@ -56,7 +56,8 @@ The retained target manifest must bind all of the following:
 - a distinct immutable rollback image digest;
 - the exact SHA-256 of the external authorization manifest;
 - the mounted target-evidence bundle and its exact SHA-256;
-- executed dark-deployment, monitoring/alerting, PostgreSQL backup/restore, TigerBeetle recovery, provider reconciliation, and activation/rollback evidence references;
+- executed dark-deployment evidence plus a distinct `required_runtime_health` evidence reference proving every mandatory runtime component healthy on that exact target;
+- executed monitoring/alerting, PostgreSQL backup/restore, TigerBeetle recovery, provider reconciliation, and activation/rollback evidence references;
 - network, provider, and settlement kill-control evidence that is genuinely independent of the application.
 
 Compute the exact SHA-256 of the retained deployment-evidence file and configure both:

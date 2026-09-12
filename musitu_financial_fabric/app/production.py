@@ -34,6 +34,7 @@ _COMMIT_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 _OCI_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _REQUIRED_DEPLOYMENT_EVIDENCE = (
     "dark_deployment",
+    "required_runtime_health",
     "monitoring_alerting",
     "postgres_backup_restore",
     "tigerbeetle_recovery",
