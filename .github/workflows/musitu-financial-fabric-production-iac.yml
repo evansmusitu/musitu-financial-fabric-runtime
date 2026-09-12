@@ -25,8 +25,9 @@ jobs:
         run: |
           tofu -chdir=infra init -backend=false
           tofu -chdir=infra validate
-      - name: Prove pinned launch perimeter is enforced
+      - name: Prove authorization and target-deployment perimeters are enforced
         run: |
+          set -euo pipefail
           manifest="$RUNNER_TEMP/production-authorization-ci.json"
           cat > "$manifest" <<'JSON'
           {
@@ -47,24 +48,59 @@ jobs:
           }
           JSON
           digest="$(sha256sum "$manifest" | awk '{print $1}')"
+          release_commit='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+          release_image='sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+          rollback_image='sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc'
 
-          tofu -chdir=infra plan -input=false -lock=false -refresh=false \
-            -var='environment=production' \
-            -var='production_mode=pilot' \
-            -var='live_funds_enabled=true' \
-            -var="authorization_manifest_path=$manifest" \
-            -var="authorization_manifest_sha256=$digest" \
-            -var='production_enabled_rails=["ecocash"]' \
-            -var='production_enabled_currencies=["USD"]' \
-            -var='max_single_payment_minor=1000' \
+          deployment="$RUNNER_TEMP/production-deployment-evidence-ci.json"
+          cat > "$deployment" <<JSON
+          {
+            "target_environment_id": "test-only-production-target",
+            "verified_at": "2026-01-01T00:00:00Z",
+            "expires_at": "2099-01-01T00:00:00Z",
+            "release": {
+              "commit_sha": "$release_commit",
+              "image_digest": "$release_image",
+              "rollback_image_digest": "$rollback_image",
+              "authorization_manifest_sha256": "$digest"
+            },
+            "evidence": {
+              "dark_deployment": {"status": "passed", "evidence_ref": "TEST-ONLY-DARK"},
+              "monitoring_alerting": {"status": "passed", "evidence_ref": "TEST-ONLY-MONITORING"},
+              "postgres_backup_restore": {"status": "passed", "evidence_ref": "TEST-ONLY-POSTGRES-DR"},
+              "tigerbeetle_recovery": {"status": "passed", "evidence_ref": "TEST-ONLY-TIGERBEETLE-DR"},
+              "provider_reconciliation": {"status": "passed", "evidence_ref": "TEST-ONLY-RECONCILIATION"},
+              "activation_rollback_drill": {"status": "passed", "evidence_ref": "TEST-ONLY-ROLLBACK"}
+            },
+            "independent_kill_controls": {
+              "network": {"status": "verified", "independent_of_application": true, "evidence_ref": "TEST-ONLY-NETWORK-KILL"},
+              "provider": {"status": "verified", "independent_of_application": true, "evidence_ref": "TEST-ONLY-PROVIDER-KILL"},
+              "settlement": {"status": "verified", "independent_of_application": true, "evidence_ref": "TEST-ONLY-SETTLEMENT-KILL"}
+            }
+          }
+          JSON
+          deployment_digest="$(sha256sum "$deployment" | awk '{print $1}')"
+
+          common=(
+            -var='environment=production'
+            -var='production_mode=pilot'
+            -var='live_funds_enabled=true'
+            -var="authorization_manifest_path=$manifest"
+            -var="authorization_manifest_sha256=$digest"
+            -var="deployment_evidence_manifest_path=$deployment"
+            -var="deployment_evidence_manifest_sha256=$deployment_digest"
+            -var="release_commit=$release_commit"
+            -var="release_image_digest=$release_image"
+            -var='production_enabled_rails=["ecocash"]'
+            -var='production_enabled_currencies=["USD"]'
+            -var='max_single_payment_minor=1000'
+          )
+
+          tofu -chdir=infra plan -input=false -lock=false -refresh=false "${common[@]}" \
             -out="$RUNNER_TEMP/valid.tfplan"
 
           if tofu -chdir=infra plan -input=false -lock=false -refresh=false \
-            -var='environment=production' \
-            -var='production_mode=pilot' \
-            -var='live_funds_enabled=true' \
-            -var="authorization_manifest_path=$manifest" \
-            -var="authorization_manifest_sha256=$digest" \
+            "${common[@]:0:9}" \
             -var='production_enabled_rails=["ecocash"]' \
             -var='production_enabled_currencies=["USD","EUR"]' \
             -var='max_single_payment_minor=1000' \
@@ -75,11 +111,7 @@ jobs:
           grep -q 'exact deployment perimeter' "$RUNNER_TEMP/overbroad-currency.log"
 
           if tofu -chdir=infra plan -input=false -lock=false -refresh=false \
-            -var='environment=production' \
-            -var='production_mode=pilot' \
-            -var='live_funds_enabled=true' \
-            -var="authorization_manifest_path=$manifest" \
-            -var="authorization_manifest_sha256=$digest" \
+            "${common[@]:0:9}" \
             -var='production_enabled_rails=["ecocash"]' \
             -var='production_enabled_currencies=["USD"]' \
             -var='max_single_payment_minor=1001' \
@@ -95,6 +127,10 @@ jobs:
             -var='live_funds_enabled=true' \
             -var="authorization_manifest_path=$manifest" \
             -var='authorization_manifest_sha256=0000000000000000000000000000000000000000000000000000000000000000' \
+            -var="deployment_evidence_manifest_path=$deployment" \
+            -var="deployment_evidence_manifest_sha256=$deployment_digest" \
+            -var="release_commit=$release_commit" \
+            -var="release_image_digest=$release_image" \
             -var='production_enabled_rails=["ecocash"]' \
             -var='production_enabled_currencies=["USD"]' \
             -var='max_single_payment_minor=1000' \
@@ -119,6 +155,10 @@ jobs:
             -var='live_funds_enabled=true' \
             -var="authorization_manifest_path=$expired" \
             -var="authorization_manifest_sha256=$expired_digest" \
+            -var="deployment_evidence_manifest_path=$deployment" \
+            -var="deployment_evidence_manifest_sha256=$deployment_digest" \
+            -var="release_commit=$release_commit" \
+            -var="release_image_digest=$release_image" \
             -var='production_enabled_rails=["ecocash"]' \
             -var='production_enabled_currencies=["USD"]' \
             -var='max_single_payment_minor=1000' \
@@ -128,4 +168,71 @@ jobs:
           fi
           grep -q 'unexpired external authorization manifest' "$RUNNER_TEMP/expired.log"
 
-          echo 'PASS: IaC fail-closed perimeter rejects scope expansion, manifest tampering, and expired authorization'
+          if tofu -chdir=infra plan -input=false -lock=false -refresh=false \
+            -var='environment=production' \
+            -var='production_mode=pilot' \
+            -var='live_funds_enabled=true' \
+            -var="authorization_manifest_path=$manifest" \
+            -var="authorization_manifest_sha256=$digest" \
+            -var="release_commit=$release_commit" \
+            -var="release_image_digest=$release_image" \
+            -var='production_enabled_rails=["ecocash"]' \
+            -var='production_enabled_currencies=["USD"]' \
+            -var='max_single_payment_minor=1000' \
+            > "$RUNNER_TEMP/missing-deployment.log" 2>&1; then
+            echo 'FAIL: missing target deployment evidence was accepted'
+            exit 1
+          fi
+          grep -q 'target deployment evidence manifest' "$RUNNER_TEMP/missing-deployment.log"
+
+          tampered="$RUNNER_TEMP/production-deployment-tampered-ci.json"
+          cp "$deployment" "$tampered"
+          printf '\n' >> "$tampered"
+          if tofu -chdir=infra plan -input=false -lock=false -refresh=false \
+            -var='environment=production' \
+            -var='production_mode=pilot' \
+            -var='live_funds_enabled=true' \
+            -var="authorization_manifest_path=$manifest" \
+            -var="authorization_manifest_sha256=$digest" \
+            -var="deployment_evidence_manifest_path=$tampered" \
+            -var="deployment_evidence_manifest_sha256=$deployment_digest" \
+            -var="release_commit=$release_commit" \
+            -var="release_image_digest=$release_image" \
+            -var='production_enabled_rails=["ecocash"]' \
+            -var='production_enabled_currencies=["USD"]' \
+            -var='max_single_payment_minor=1000' \
+            > "$RUNNER_TEMP/tampered-deployment.log" 2>&1; then
+            echo 'FAIL: tampered target deployment evidence was accepted'
+            exit 1
+          fi
+          grep -q 'target deployment evidence manifest' "$RUNNER_TEMP/tampered-deployment.log"
+
+          nonindependent="$RUNNER_TEMP/production-deployment-nonindependent-ci.json"
+          python - "$deployment" "$nonindependent" <<'PY'
+          import json, sys
+          source, target = sys.argv[1], sys.argv[2]
+          data = json.load(open(source))
+          data['independent_kill_controls']['provider']['independent_of_application'] = False
+          json.dump(data, open(target, 'w'), sort_keys=True)
+          PY
+          nonindependent_digest="$(sha256sum "$nonindependent" | awk '{print $1}')"
+          if tofu -chdir=infra plan -input=false -lock=false -refresh=false \
+            -var='environment=production' \
+            -var='production_mode=pilot' \
+            -var='live_funds_enabled=true' \
+            -var="authorization_manifest_path=$manifest" \
+            -var="authorization_manifest_sha256=$digest" \
+            -var="deployment_evidence_manifest_path=$nonindependent" \
+            -var="deployment_evidence_manifest_sha256=$nonindependent_digest" \
+            -var="release_commit=$release_commit" \
+            -var="release_image_digest=$release_image" \
+            -var='production_enabled_rails=["ecocash"]' \
+            -var='production_enabled_currencies=["USD"]' \
+            -var='max_single_payment_minor=1000' \
+            > "$RUNNER_TEMP/nonindependent-kill.log" 2>&1; then
+            echo 'FAIL: application-dependent provider kill control was accepted'
+            exit 1
+          fi
+          grep -q 'independent network/provider/settlement kill controls' "$RUNNER_TEMP/nonindependent-kill.log"
+
+          echo 'PASS: IaC fail-closed guards require both exact external authorization and exact target-deployment evidence'

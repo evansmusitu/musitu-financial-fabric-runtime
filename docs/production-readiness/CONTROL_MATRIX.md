@@ -20,6 +20,9 @@ This matrix separates software-controlled readiness from external authorization.
 | Provider settlement | Live-funds authorization gate required before monetary posting |
 | Secrets | No production secret belongs in Git; deploy through the secrets control plane |
 | Production evidence | Authorization manifest must be external to the repo and SHA-256 pinned |
+| Target activation evidence | Live-funds readiness also requires a separately SHA-256-pinned target-deployment evidence manifest bound to the exact runtime commit, immutable OCI image digest, distinct rollback image digest, and exact authorization-manifest SHA-256 |
+| Executed target controls | The target manifest must reference passed dark-deployment, monitoring/alerting, PostgreSQL backup/restore, TigerBeetle recovery, provider reconciliation, and activation/rollback drills |
+| Independent kill controls | The target manifest must reference verified network, provider, and settlement kill controls that are independent of the application flag |
 | Runtime dependency evidence | Production startup accepts only evidence-locked Python/runtime dependency versions |
 | OCI package | Production candidate uses digest-pinned Python 3.12.14 base, numeric non-root user, read-only root filesystem, dropped Linux capabilities, and `no-new-privileges` |
 | TigerBeetle container syscall boundary | Pinned Moby default-deny seccomp baseline is extended only for `io_uring_setup`, `io_uring_enter`, and `io_uring_register`; the generated profile is evidence-hashed |
@@ -32,7 +35,8 @@ The live-funds gate requires independent evidence for all of these categories:
 - regulator authorization appropriate to the approved pilot/production scope;
 - sponsor/settlement bank approval;
 - applicable data-protection authorization/registration;
-- independent security assurance.
+- independent security assurance;
+- production rail-provider authorization for every enabled live rail.
 
 The evidence manifest must set each item to `approved`, contain an evidence reference, permit `pilot` or `production` funds scope, and match the configured SHA-256 exactly.
 
@@ -42,8 +46,8 @@ Provider production credentials and signed contracts, bank settlement accounts, 
 
 ## Deployment evidence still distinct from CI
 
-A green OCI packaging workflow proves the candidate artifact can run under the tested hardened container contract. It does **not** prove deployment into the final production registry, target cluster/host, production secrets control plane, production network perimeter, production observability stack, or operational change-management path. Those target-environment controls require their own executed evidence before activation.
+A green OCI packaging workflow proves the candidate artifact can run under the tested hardened container contract. It does **not** prove deployment into the final production registry, target cluster/host, production secrets control plane, production network perimeter, production observability stack, or operational change-management path. Those target-environment controls require their own executed evidence before activation. The runtime and IaC guards now fail closed unless a separately byte-pinned deployment-evidence manifest binds that executed evidence to the exact release commit, immutable image digest, rollback image, and external-authorization manifest. The manifest is only a binding/verification input: it does not manufacture the underlying evidence, independent controls, or external approvals.
 
 ## Claim boundary
 
-Passing the production-readiness and OCI evidence workflows means the **software-controlled production safeguards and the tested provider-neutral production container candidate have been implemented and validated**. It does not mean MUSITU has been authorized to handle real funds or has been deployed to the final production environment. Real funds remain disabled until the external authorization manifest independently proves every required external gate and the final target environment has its own deployment evidence.
+Passing the production-readiness and OCI evidence workflows means the **software-controlled production safeguards and the tested provider-neutral production container candidate have been implemented and validated**. It does not mean MUSITU has been authorized to handle real funds or has been deployed to the final production environment. Real funds remain disabled until the external authorization manifest contains authentic required external evidence **and** the final target environment has a valid, separately pinned deployment-evidence manifest referencing genuinely executed controls. Neither repository tests nor a self-authored status string is independent authorization.

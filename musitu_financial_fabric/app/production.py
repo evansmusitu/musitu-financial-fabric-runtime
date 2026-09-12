@@ -30,6 +30,17 @@ _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
 _SECURE_POSTGRES_SSLMODES = {"require", "verify-ca", "verify-full"}
 _PG_BIGINT_MAX = (1 << 63) - 1
+_COMMIT_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+_OCI_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+_REQUIRED_DEPLOYMENT_EVIDENCE = (
+    "dark_deployment",
+    "monitoring_alerting",
+    "postgres_backup_restore",
+    "tigerbeetle_recovery",
+    "provider_reconciliation",
+    "activation_rollback_drill",
+)
+_REQUIRED_INDEPENDENT_KILL_CONTROLS = ("network", "provider", "settlement")
 
 
 def _parsed_service_url(value: str):
@@ -100,6 +111,28 @@ def _authorization_manifest(cfg: Settings) -> tuple[dict[str, Any] | None, str |
         return None, "authorization manifest is not valid JSON"
     if not isinstance(data, dict):
         return None, "authorization manifest root must be an object"
+    return data, None
+
+
+def _deployment_evidence_manifest(cfg: Settings) -> tuple[dict[str, Any] | None, str | None]:
+    if not cfg.deployment_evidence_manifest_path or not cfg.deployment_evidence_manifest_sha256:
+        return None, "target deployment evidence manifest is not configured"
+    if not _SHA256_RE.fullmatch(cfg.deployment_evidence_manifest_sha256):
+        return None, "target deployment evidence manifest SHA-256 is malformed"
+    path = Path(cfg.deployment_evidence_manifest_path)
+    try:
+        raw = path.read_bytes()
+    except OSError as exc:
+        return None, f"target deployment evidence manifest unavailable: {type(exc).__name__}"
+    actual = hashlib.sha256(raw).hexdigest()
+    if actual != cfg.deployment_evidence_manifest_sha256:
+        return None, "target deployment evidence manifest SHA-256 mismatch"
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return None, "target deployment evidence manifest is not valid JSON"
+    if not isinstance(data, dict):
+        return None, "target deployment evidence manifest root must be an object"
     return data, None
 
 
@@ -210,6 +243,164 @@ def _evidence_checks(cfg: Settings) -> list[ProductionCheck]:
         expiry_ok,
         "external",
         "authorization evidence is within its explicit validity period" if expiry_ok else "authorization expiry is missing, invalid, or expired",
+    ))
+    return checks
+
+
+def _deployment_evidence_checks(cfg: Settings) -> list[ProductionCheck]:
+    manifest, error = _deployment_evidence_manifest(cfg)
+    if error:
+        return [ProductionCheck("deployment_evidence_manifest", False, "deployment", error)]
+    assert manifest is not None
+
+    checks = [ProductionCheck(
+        "deployment_evidence_manifest",
+        True,
+        "deployment",
+        "byte-pinned target deployment evidence manifest verified",
+    )]
+
+    target_environment_id = manifest.get("target_environment_id")
+    target_ok = isinstance(target_environment_id, str) and bool(target_environment_id.strip())
+    checks.append(ProductionCheck(
+        "deployment_target_identity",
+        target_ok,
+        "deployment",
+        "target production environment has an explicit immutable evidence identity" if target_ok else "target production environment identity is missing",
+    ))
+
+    release = manifest.get("release")
+    if not isinstance(release, dict):
+        checks.extend([
+            ProductionCheck("deployment_release_commit", False, "deployment", "target deployment release.commit_sha is missing"),
+            ProductionCheck("deployment_release_image", False, "deployment", "target deployment release.image_digest is missing"),
+            ProductionCheck("deployment_rollback_image", False, "deployment", "target deployment release.rollback_image_digest is missing"),
+            ProductionCheck("deployment_authorization_binding", False, "deployment", "target deployment is not bound to the external authorization manifest"),
+        ])
+    else:
+        manifest_commit = str(release.get("commit_sha", "")).strip().lower()
+        manifest_image = str(release.get("image_digest", "")).strip().lower()
+        rollback_image = str(release.get("rollback_image_digest", "")).strip().lower()
+        auth_pin = str(release.get("authorization_manifest_sha256", "")).strip().lower()
+        commit_ok = (
+            bool(cfg.build_commit)
+            and bool(_COMMIT_SHA_RE.fullmatch(cfg.build_commit))
+            and manifest_commit == cfg.build_commit
+        )
+        image_ok = (
+            bool(cfg.release_image_digest)
+            and bool(_OCI_DIGEST_RE.fullmatch(cfg.release_image_digest))
+            and manifest_image == cfg.release_image_digest
+        )
+        rollback_ok = bool(_OCI_DIGEST_RE.fullmatch(rollback_image)) and rollback_image != manifest_image
+        auth_binding_ok = (
+            bool(_SHA256_RE.fullmatch(cfg.authorization_manifest_sha256))
+            and auth_pin == cfg.authorization_manifest_sha256
+        )
+        checks.extend([
+            ProductionCheck(
+                "deployment_release_commit",
+                commit_ok,
+                "deployment",
+                "target deployment evidence matches the running source revision" if commit_ok else "target deployment evidence does not match the running source revision",
+            ),
+            ProductionCheck(
+                "deployment_release_image",
+                image_ok,
+                "deployment",
+                "target deployment evidence matches the immutable running OCI digest" if image_ok else "target deployment evidence does not match the immutable running OCI digest",
+            ),
+            ProductionCheck(
+                "deployment_rollback_image",
+                rollback_ok,
+                "deployment",
+                "a distinct immutable rollback OCI digest is recorded" if rollback_ok else "a distinct immutable rollback OCI digest is missing or malformed",
+            ),
+            ProductionCheck(
+                "deployment_authorization_binding",
+                auth_binding_ok,
+                "deployment",
+                "target deployment evidence is bound to the exact external authorization manifest" if auth_binding_ok else "target deployment evidence is not bound to the configured external authorization manifest",
+            ),
+        ])
+
+    evidence = manifest.get("evidence")
+    if not isinstance(evidence, dict):
+        checks.append(ProductionCheck("deployment_operational_evidence", False, "deployment", "target deployment evidence object is missing"))
+    else:
+        for key in _REQUIRED_DEPLOYMENT_EVIDENCE:
+            row = evidence.get(key)
+            ok = (
+                isinstance(row, dict)
+                and row.get("status") == "passed"
+                and isinstance(row.get("evidence_ref"), str)
+                and bool(row["evidence_ref"].strip())
+            )
+            checks.append(ProductionCheck(
+                f"deployment_{key}",
+                bool(ok),
+                "deployment",
+                f"{key} target-environment evidence {'passed' if ok else 'missing or not passed'}",
+            ))
+
+    kill_controls = manifest.get("independent_kill_controls")
+    if not isinstance(kill_controls, dict):
+        checks.append(ProductionCheck(
+            "independent_kill_controls",
+            False,
+            "deployment",
+            "independent network/provider/settlement kill-control evidence is missing",
+        ))
+    else:
+        for key in _REQUIRED_INDEPENDENT_KILL_CONTROLS:
+            row = kill_controls.get(key)
+            ok = (
+                isinstance(row, dict)
+                and row.get("status") == "verified"
+                and row.get("independent_of_application") is True
+                and isinstance(row.get("evidence_ref"), str)
+                and bool(row["evidence_ref"].strip())
+            )
+            checks.append(ProductionCheck(
+                f"independent_kill_{key}",
+                bool(ok),
+                "deployment",
+                f"independent {key} kill control {'verified' if ok else 'missing or not independently verified'}",
+            ))
+
+    now = datetime.now(timezone.utc)
+    verified_at = manifest.get("verified_at")
+    try:
+        if not verified_at:
+            raise ValueError("missing verified_at")
+        verified = datetime.fromisoformat(str(verified_at).replace("Z", "+00:00"))
+        if verified.tzinfo is None:
+            raise ValueError("verified_at must include timezone")
+        verified_ok = verified <= now
+    except Exception:
+        verified_ok = False
+    checks.append(ProductionCheck(
+        "deployment_verified_at",
+        verified_ok,
+        "deployment",
+        "target deployment verification timestamp is valid" if verified_ok else "target deployment verification timestamp is missing, invalid, or in the future",
+    ))
+
+    expires_at = manifest.get("expires_at")
+    try:
+        if not expires_at:
+            raise ValueError("missing expiry")
+        expiry = datetime.fromisoformat(str(expires_at).replace("Z", "+00:00"))
+        if expiry.tzinfo is None:
+            raise ValueError("expiry must include timezone")
+        expiry_ok = expiry > now
+    except Exception:
+        expiry_ok = False
+    checks.append(ProductionCheck(
+        "deployment_evidence_not_expired",
+        expiry_ok,
+        "deployment",
+        "target deployment evidence is within its explicit validity period" if expiry_ok else "target deployment evidence expiry is missing, invalid, or expired",
     ))
     return checks
 
@@ -337,8 +528,21 @@ def production_checks(cfg: Settings = settings) -> list[ProductionCheck]:
             "software",
             "provider webhook secret is non-default and at least 32 characters",
         ),
+        ProductionCheck(
+            "release_commit",
+            bool(_COMMIT_SHA_RE.fullmatch(cfg.build_commit)),
+            "software",
+            "running production artifact exposes an exact 40-hex source revision",
+        ),
+        ProductionCheck(
+            "release_image_digest",
+            bool(_OCI_DIGEST_RE.fullmatch(cfg.release_image_digest)),
+            "software",
+            "running production artifact is identified by an immutable sha256 OCI digest",
+        ),
     ]
     checks.extend(_evidence_checks(cfg))
+    checks.extend(_deployment_evidence_checks(cfg))
     return checks
 
 

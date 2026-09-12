@@ -37,6 +37,8 @@ def _base_production(**overrides):
         ecocash_client_id="test-client",
         ecocash_client_secret="test-secret",
         max_single_payment_minor=1000,
+        build_commit="a" * 40,
+        release_image_digest="sha256:" + "b" * 64,
     )
     values.update(overrides)
     return Settings(**values)
@@ -77,6 +79,58 @@ def _approved_manifest(
     return str(path), hashlib.sha256(raw).hexdigest()
 
 
+def _passed_deployment_manifest(
+    tmp_path,
+    *,
+    authorization_digest: str,
+    commit_sha: str = "a" * 40,
+    image_digest: str = "sha256:" + "b" * 64,
+    rollback_image_digest: str = "sha256:" + "c" * 64,
+    expires_at: str | None = None,
+    provider_kill_independent: bool = True,
+) -> tuple[str, str]:
+    manifest = {
+        "target_environment_id": "test-only-production-target",
+        "verified_at": (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat(),
+        "expires_at": expires_at or (datetime.now(timezone.utc) + timedelta(days=1)).isoformat(),
+        "release": {
+            "commit_sha": commit_sha,
+            "image_digest": image_digest,
+            "rollback_image_digest": rollback_image_digest,
+            "authorization_manifest_sha256": authorization_digest,
+        },
+        "evidence": {
+            "dark_deployment": {"status": "passed", "evidence_ref": "TEST-ONLY-DARK"},
+            "monitoring_alerting": {"status": "passed", "evidence_ref": "TEST-ONLY-MONITORING"},
+            "postgres_backup_restore": {"status": "passed", "evidence_ref": "TEST-ONLY-POSTGRES-DR"},
+            "tigerbeetle_recovery": {"status": "passed", "evidence_ref": "TEST-ONLY-TB-DR"},
+            "provider_reconciliation": {"status": "passed", "evidence_ref": "TEST-ONLY-RECONCILIATION"},
+            "activation_rollback_drill": {"status": "passed", "evidence_ref": "TEST-ONLY-ROLLBACK"},
+        },
+        "independent_kill_controls": {
+            "network": {
+                "status": "verified",
+                "independent_of_application": True,
+                "evidence_ref": "TEST-ONLY-NETWORK-KILL",
+            },
+            "provider": {
+                "status": "verified",
+                "independent_of_application": provider_kill_independent,
+                "evidence_ref": "TEST-ONLY-PROVIDER-KILL",
+            },
+            "settlement": {
+                "status": "verified",
+                "independent_of_application": True,
+                "evidence_ref": "TEST-ONLY-SETTLEMENT-KILL",
+            },
+        },
+    }
+    path = tmp_path / "deployment-evidence.json"
+    raw = json.dumps(manifest, sort_keys=True).encode()
+    path.write_bytes(raw)
+    return str(path), hashlib.sha256(raw).hexdigest()
+
+
 def test_live_funds_closed_without_external_evidence():
     cfg = _base_production()
     result = production_readiness(cfg)
@@ -85,12 +139,29 @@ def test_live_funds_closed_without_external_evidence():
         assert_live_funds_allowed(cfg)
 
 
-def test_pinned_approved_manifest_opens_pilot_control_gate(tmp_path):
+def test_external_authorization_alone_cannot_open_without_target_deployment_evidence(tmp_path):
     path, digest = _approved_manifest(tmp_path, funds_scope="pilot")
     cfg = _base_production(
         production_mode="pilot",
         authorization_manifest_path=path,
         authorization_manifest_sha256=digest,
+    )
+    result = production_readiness(cfg)
+    assert result["ready_for_live_funds"] is False
+    assert any(row["key"] == "deployment_evidence_manifest" and not row["ok"] for row in result["checks"])
+    with pytest.raises(ProductionGateError, match="deployment_evidence_manifest"):
+        assert_live_funds_allowed(cfg)
+
+
+def test_pinned_approved_manifest_opens_pilot_control_gate(tmp_path):
+    path, digest = _approved_manifest(tmp_path, funds_scope="pilot")
+    deployment_path, deployment_digest = _passed_deployment_manifest(tmp_path, authorization_digest=digest)
+    cfg = _base_production(
+        production_mode="pilot",
+        authorization_manifest_path=path,
+        authorization_manifest_sha256=digest,
+        deployment_evidence_manifest_path=deployment_path,
+        deployment_evidence_manifest_sha256=deployment_digest,
     )
     assert production_readiness(cfg)["ready_for_live_funds"] is True
     assert_live_funds_allowed(cfg)
@@ -127,13 +198,103 @@ def test_pilot_authorization_cannot_open_live_runtime(tmp_path):
 
 def test_production_authorization_can_open_live_runtime(tmp_path):
     path, digest = _approved_manifest(tmp_path, funds_scope="production")
+    deployment_path, deployment_digest = _passed_deployment_manifest(tmp_path, authorization_digest=digest)
     cfg = _base_production(
         production_mode="live",
         authorization_manifest_path=path,
         authorization_manifest_sha256=digest,
+        deployment_evidence_manifest_path=deployment_path,
+        deployment_evidence_manifest_sha256=deployment_digest,
     )
     assert production_readiness(cfg)["ready_for_live_funds"] is True
     assert_live_funds_allowed(cfg)
+
+
+def test_target_deployment_manifest_pin_is_fail_closed(tmp_path):
+    path, digest = _approved_manifest(tmp_path, funds_scope="production")
+    deployment_path, deployment_digest = _passed_deployment_manifest(tmp_path, authorization_digest=digest)
+    with open(deployment_path, "ab") as handle:
+        handle.write(b"\n")
+    cfg = _base_production(
+        production_mode="live",
+        authorization_manifest_path=path,
+        authorization_manifest_sha256=digest,
+        deployment_evidence_manifest_path=deployment_path,
+        deployment_evidence_manifest_sha256=deployment_digest,
+    )
+    result = production_readiness(cfg)
+    assert result["ready_for_live_funds"] is False
+    assert any(row["key"] == "deployment_evidence_manifest" and not row["ok"] for row in result["checks"])
+
+
+def test_target_deployment_must_match_running_commit(tmp_path):
+    path, digest = _approved_manifest(tmp_path, funds_scope="production")
+    deployment_path, deployment_digest = _passed_deployment_manifest(
+        tmp_path, authorization_digest=digest, commit_sha="d" * 40
+    )
+    cfg = _base_production(
+        production_mode="live",
+        authorization_manifest_path=path,
+        authorization_manifest_sha256=digest,
+        deployment_evidence_manifest_path=deployment_path,
+        deployment_evidence_manifest_sha256=deployment_digest,
+    )
+    result = production_readiness(cfg)
+    assert result["ready_for_live_funds"] is False
+    assert any(row["key"] == "deployment_release_commit" and not row["ok"] for row in result["checks"])
+
+
+def test_target_deployment_must_bind_exact_authorization_manifest(tmp_path):
+    path, digest = _approved_manifest(tmp_path, funds_scope="production")
+    deployment_path, deployment_digest = _passed_deployment_manifest(
+        tmp_path, authorization_digest="f" * 64
+    )
+    cfg = _base_production(
+        production_mode="live",
+        authorization_manifest_path=path,
+        authorization_manifest_sha256=digest,
+        deployment_evidence_manifest_path=deployment_path,
+        deployment_evidence_manifest_sha256=deployment_digest,
+    )
+    result = production_readiness(cfg)
+    assert result["ready_for_live_funds"] is False
+    assert any(row["key"] == "deployment_authorization_binding" and not row["ok"] for row in result["checks"])
+
+
+def test_provider_kill_control_must_be_independent_of_application(tmp_path):
+    path, digest = _approved_manifest(tmp_path, funds_scope="production")
+    deployment_path, deployment_digest = _passed_deployment_manifest(
+        tmp_path, authorization_digest=digest, provider_kill_independent=False
+    )
+    cfg = _base_production(
+        production_mode="live",
+        authorization_manifest_path=path,
+        authorization_manifest_sha256=digest,
+        deployment_evidence_manifest_path=deployment_path,
+        deployment_evidence_manifest_sha256=deployment_digest,
+    )
+    result = production_readiness(cfg)
+    assert result["ready_for_live_funds"] is False
+    assert any(row["key"] == "independent_kill_provider" and not row["ok"] for row in result["checks"])
+
+
+def test_target_deployment_evidence_expires_fail_closed(tmp_path):
+    path, digest = _approved_manifest(tmp_path, funds_scope="production")
+    deployment_path, deployment_digest = _passed_deployment_manifest(
+        tmp_path,
+        authorization_digest=digest,
+        expires_at=(datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat(),
+    )
+    cfg = _base_production(
+        production_mode="live",
+        authorization_manifest_path=path,
+        authorization_manifest_sha256=digest,
+        deployment_evidence_manifest_path=deployment_path,
+        deployment_evidence_manifest_sha256=deployment_digest,
+    )
+    result = production_readiness(cfg)
+    assert result["ready_for_live_funds"] is False
+    assert any(row["key"] == "deployment_evidence_not_expired" and not row["ok"] for row in result["checks"])
 
 
 def test_live_funds_reject_reserved_tigerbeetle_test_cluster(tmp_path):

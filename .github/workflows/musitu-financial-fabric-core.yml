@@ -10,6 +10,7 @@ on:
     paths:
       - 'musitu_financial_fabric/**'
       - '.github/workflows/musitu-financial-fabric-*.yml'
+  workflow_dispatch:
 
 permissions:
   contents: read

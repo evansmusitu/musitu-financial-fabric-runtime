@@ -82,6 +82,10 @@ class Settings:
 
     authorization_manifest_path: str = field(default_factory=lambda: _str("MUSITU_AUTHORIZATION_MANIFEST_PATH"))
     authorization_manifest_sha256: str = field(default_factory=lambda: _str("MUSITU_AUTHORIZATION_MANIFEST_SHA256").lower())
+    deployment_evidence_manifest_path: str = field(default_factory=lambda: _str("MUSITU_DEPLOYMENT_EVIDENCE_MANIFEST_PATH"))
+    deployment_evidence_manifest_sha256: str = field(default_factory=lambda: _str("MUSITU_DEPLOYMENT_EVIDENCE_MANIFEST_SHA256").lower())
+    build_commit: str = field(default_factory=lambda: _str("MUSITU_BUILD_COMMIT").lower())
+    release_image_digest: str = field(default_factory=lambda: _str("MUSITU_RELEASE_IMAGE_DIGEST").lower())
 
     ledger_backend: str = field(default_factory=lambda: _str("MUSITU_LEDGER_BACKEND", "sqlite").lower())
     tigerbeetle_cluster_id: int = field(default_factory=lambda: int(_str("MUSITU_TIGERBEETLE_CLUSTER_ID", "0")))

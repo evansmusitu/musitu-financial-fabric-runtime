@@ -55,12 +55,15 @@ jobs:
           set -euo pipefail
           user="$(docker image inspect "$MUSITU_IMAGE" --format '{{.Config.User}}')"
           revision="$(docker image inspect "$MUSITU_IMAGE" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')"
+          embedded_revision="$(docker image inspect "$MUSITU_IMAGE" --format '{{range .Config.Env}}{{println .}}{{end}}' | awk -F= '$1 == "MUSITU_BUILD_COMMIT" {print substr($0, index($0, "=") + 1)}')"
           test "$user" = '65532:65532'
           test "$revision" = "$GITHUB_SHA"
+          test "$embedded_revision" = "$GITHUB_SHA"
           {
             echo "image_id=$(cat /tmp/musitu-image-id.txt)"
             echo "runtime_user=$user"
             echo "revision=$revision"
+            echo "embedded_runtime_revision=$embedded_revision"
             echo "base=$MUSITU_PYTHON_BASE"
           } | tee /tmp/musitu-image-contract.txt
 

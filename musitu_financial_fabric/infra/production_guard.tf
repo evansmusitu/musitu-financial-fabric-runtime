@@ -37,6 +37,39 @@ variable "authorization_manifest_sha256" {
   sensitive   = true
 }
 
+variable "deployment_evidence_manifest_path" {
+  type        = string
+  description = "Path to the retained target-environment deployment evidence manifest."
+  default     = ""
+}
+
+variable "deployment_evidence_manifest_sha256" {
+  type        = string
+  description = "SHA-256 pin of the target-environment deployment evidence manifest."
+  default     = ""
+  sensitive   = true
+}
+
+variable "release_commit" {
+  type        = string
+  description = "Exact 40-hex source revision embedded in the running release."
+  default     = ""
+  validation {
+    condition     = var.release_commit == "" || can(regex("^[0-9a-fA-F]{40}$", var.release_commit))
+    error_message = "release_commit must be empty or an exact 40-hex commit SHA."
+  }
+}
+
+variable "release_image_digest" {
+  type        = string
+  description = "Immutable OCI digest of the running release image."
+  default     = ""
+  validation {
+    condition     = var.release_image_digest == "" || can(regex("^sha256:[0-9a-fA-F]{64}$", var.release_image_digest))
+    error_message = "release_image_digest must be empty or a sha256 OCI digest."
+  }
+}
+
 variable "production_enabled_rails" {
   type        = set(string)
   description = "Rails enabled by the deployment for production funds movement."
@@ -121,6 +154,65 @@ locals {
     local.authorized_max_single_payment_minor > 0 &&
     var.max_single_payment_minor <= local.authorized_max_single_payment_minor
   )
+
+  deployment_manifest_present = var.deployment_evidence_manifest_path != "" && fileexists(var.deployment_evidence_manifest_path)
+  deployment_manifest_raw     = local.deployment_manifest_present ? file(var.deployment_evidence_manifest_path) : ""
+  deployment_manifest         = try(jsondecode(local.deployment_manifest_raw), {})
+  deployment_hash_matches = (
+    local.deployment_manifest_present &&
+    can(regex("^[0-9a-fA-F]{64}$", var.deployment_evidence_manifest_sha256)) &&
+    lower(var.deployment_evidence_manifest_sha256) == sha256(local.deployment_manifest_raw)
+  )
+  deployment_target_identity = trimspace(try(local.deployment_manifest.target_environment_id, "")) != ""
+
+  release_commit_matches = (
+    can(regex("^[0-9a-fA-F]{40}$", var.release_commit)) &&
+    lower(try(local.deployment_manifest.release.commit_sha, "")) == lower(var.release_commit)
+  )
+  release_image_matches = (
+    can(regex("^sha256:[0-9a-fA-F]{64}$", var.release_image_digest)) &&
+    lower(try(local.deployment_manifest.release.image_digest, "")) == lower(var.release_image_digest)
+  )
+  rollback_image_digest = lower(try(local.deployment_manifest.release.rollback_image_digest, ""))
+  rollback_image_valid = (
+    can(regex("^sha256:[0-9a-fA-F]{64}$", local.rollback_image_digest)) &&
+    local.rollback_image_digest != lower(var.release_image_digest)
+  )
+  deployment_authorization_binding = (
+    can(regex("^[0-9a-fA-F]{64}$", var.authorization_manifest_sha256)) &&
+    lower(try(local.deployment_manifest.release.authorization_manifest_sha256, "")) == lower(var.authorization_manifest_sha256)
+  )
+
+  deployment_required_evidence = [
+    "dark_deployment",
+    "monitoring_alerting",
+    "postgres_backup_restore",
+    "tigerbeetle_recovery",
+    "provider_reconciliation",
+    "activation_rollback_drill",
+  ]
+  deployment_evidence_passed = alltrue([
+    for key in local.deployment_required_evidence :
+    try(local.deployment_manifest.evidence[key].status, "") == "passed" &&
+    trimspace(try(local.deployment_manifest.evidence[key].evidence_ref, "")) != ""
+  ])
+
+  independent_kill_control_names = ["network", "provider", "settlement"]
+  independent_kill_controls_verified = alltrue([
+    for key in local.independent_kill_control_names :
+    try(local.deployment_manifest.independent_kill_controls[key].status, "") == "verified" &&
+    try(local.deployment_manifest.independent_kill_controls[key].independent_of_application, false) == true &&
+    trimspace(try(local.deployment_manifest.independent_kill_controls[key].evidence_ref, "")) != ""
+  ])
+
+  deployment_verified_at_valid = try(
+    timecmp(try(local.deployment_manifest.verified_at, ""), plantimestamp()) <= 0,
+    false
+  )
+  deployment_not_expired = try(
+    timecmp(try(local.deployment_manifest.expires_at, ""), plantimestamp()) > 0,
+    false
+  )
 }
 
 resource "terraform_data" "musitu_production_guard" {
@@ -131,6 +223,8 @@ resource "terraform_data" "musitu_production_guard" {
     enabled_rails            = sort(tolist(local.runtime_rails))
     enabled_currencies       = sort(tolist(local.runtime_currencies))
     max_single_payment_minor = var.max_single_payment_minor
+    release_commit           = lower(var.release_commit)
+    release_image_digest     = lower(var.release_image_digest)
   }
 
   lifecycle {
@@ -147,6 +241,22 @@ resource "terraform_data" "musitu_production_guard" {
         local.payment_limit_within_authorization
       )
       error_message = "Live funds require a byte-pinned, unexpired external authorization manifest whose approved evidence, funds scope, rails, currencies, and single-payment ceiling contain the exact deployment perimeter."
+    }
+
+    precondition {
+      condition = !var.live_funds_enabled || (
+        local.deployment_hash_matches &&
+        local.deployment_target_identity &&
+        local.release_commit_matches &&
+        local.release_image_matches &&
+        local.rollback_image_valid &&
+        local.deployment_authorization_binding &&
+        local.deployment_evidence_passed &&
+        local.independent_kill_controls_verified &&
+        local.deployment_verified_at_valid &&
+        local.deployment_not_expired
+      )
+      error_message = "Live funds require a byte-pinned target deployment evidence manifest bound to the exact release commit, immutable OCI digest, distinct rollback digest, external authorization pin, executed target-environment drills, and independent network/provider/settlement kill controls."
     }
   }
 }

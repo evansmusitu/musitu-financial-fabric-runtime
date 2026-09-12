@@ -40,18 +40,38 @@ Create the deployed authorization manifest from the repository example only afte
 
 Never commit the real authorization package, credentials, or confidential regulatory material to this repository.
 
-## 4. Controlled pilot
+## 4. Bind executed target-deployment evidence
 
-Only after the authorization gate reports ready may an approved pilot use:
+After the real target environment has been deployed dark and the required drills have actually passed, create a deployment-evidence manifest from `control/musitu-financial-fabric/production-deployment-evidence-manifest.example.json`. Do **not** mark a control passed merely because CI, documentation, or an application flag exists.
+
+The retained target manifest must bind all of the following:
+
+- the exact runtime commit embedded in the image as `MUSITU_BUILD_COMMIT`;
+- the immutable digest of the image actually running in the target environment, configured as `MUSITU_RELEASE_IMAGE_DIGEST`;
+- a distinct immutable rollback image digest;
+- the exact SHA-256 of the external authorization manifest;
+- executed dark-deployment, monitoring/alerting, PostgreSQL backup/restore, TigerBeetle recovery, provider reconciliation, and activation/rollback evidence references;
+- network, provider, and settlement kill-control evidence that is genuinely independent of the application.
+
+Compute the exact SHA-256 of the retained deployment-evidence file and configure both:
+
+- `MUSITU_DEPLOYMENT_EVIDENCE_MANIFEST_PATH`
+- `MUSITU_DEPLOYMENT_EVIDENCE_MANIFEST_SHA256`
+
+The deployment-evidence manifest is a byte-pinned binding record, not an authority that can create regulator approval, provider authorization, independent security certification, or independent kill controls. Keep authentic evidence outside the source repository under the appropriate operational controls.
+
+## 5. Controlled pilot
+
+Only after **both** the external-authorization and target-deployment gates report ready may an approved pilot use:
 
 - `MUSITU_PRODUCTION_MODE=pilot`
 - `MUSITU_LIVE_FUNDS_ENABLED=true`
 
 The external manifest must explicitly allow `pilot` or `production` funds scope. Enforce regulator/counterparty transaction, user, corridor, currency, and volume limits outside and inside the payment policy layer as applicable.
 
-## 5. Production promotion
+## 6. Production promotion
 
-Move to `MUSITU_PRODUCTION_MODE=live` only when the external evidence explicitly covers production operation and all pilot exit criteria are satisfied. Perform canary activation, continuous reconciliation, audit verification, alerting, and rollback drills.
+Move to `MUSITU_PRODUCTION_MODE=live` only when the external evidence explicitly covers production operation, the pinned target-deployment evidence is current for the exact running release, and all pilot exit criteria are satisfied. Perform canary activation, continuous reconciliation, audit verification, alerting, and rollback drills.
 
 ## Emergency stop
 
