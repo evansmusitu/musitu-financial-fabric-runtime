@@ -1,0 +1,86 @@
+name: MUSITU Financial Fabric — AWS Target Staging
+
+on:
+  push:
+    branches: [musitu-financial-fabric-aws-target-staging-20260912]
+    paths:
+      - 'musitu_financial_fabric/infra/aws_target/**'
+      - 'musitu_financial_fabric/stack/required-components.json'
+      - '.github/workflows/mff-aws-target-staging.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  static-foundation-validation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: musitu_financial_fabric/infra/aws_target
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: opentofu/setup-opentofu@9d84900f3238fab8cd84ce47d658d25dd008be2f # v1
+
+      - name: Verify authoritative runtime inventory boundary
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          registry_path = Path('../../stack/required-components.json')
+          registry = json.loads(registry_path.read_text())
+          rows = registry['components'] if isinstance(registry, dict) else registry
+          runtimes = [
+              row for row in rows
+              if row.get('required') is True and row.get('kind') == 'runtime'
+          ]
+          keys = [row['key'] for row in runtimes]
+          assert len(runtimes) == 26, f'expected 26 required runtimes, found {len(runtimes)}'
+          assert len(keys) == len(set(keys)), 'duplicate required runtime keys'
+          expected = {
+              'tigerbeetle', 'hyperswitch', 'mojaloop', 'paymenthub', 'gazelle',
+              'fineract', 'tazama', 'watchman', 'killbill', 'cardvault', 'keycloak',
+              'openfga', 'opa', 'spire', 'openbao', 'temporal', 'nats', 'postgres',
+              'clickhouse', 'valkey', 'opensearch', 'envoy', 'coraza', 'otel',
+              'rafiki', 'stellar-anchor',
+          }
+          assert set(keys) == expected, f'required runtime registry drift: {sorted(set(keys) ^ expected)}'
+          print('required runtime registry: 26/26 exact')
+          PY
+
+      - name: Verify fail-closed staging invariants
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          variables = Path('variables.tf').read_text()
+          providers = Path('versions.tf').read_text()
+          readme = Path('README.md').read_text()
+          tigerbeetle = Path('tigerbeetle.tf').read_text()
+
+          assert 'version = "6.62.0"' in providers
+          assert 'default     = "af-south-1"' in variables
+          assert 'default     = "1.36"' in variables
+          assert '!contains(var.eks_public_access_cidrs, "0.0.0.0/0")' in variables
+          assert '!contains(var.eks_public_access_cidrs, "::/0")' in variables
+          assert 'MUSITU_LIVE_FUNDS_ENABLED=true' not in readme
+          assert 'tigerbeetle_required_replicas = 6' in tigerbeetle
+          assert 'aws_instance' not in tigerbeetle
+          print('fail-closed staging invariants: PASS')
+          PY
+
+      - name: OpenTofu formatting
+        run: tofu fmt -check -diff -recursive
+
+      - name: Initialize pinned provider without backend
+        run: tofu init -backend=false -input=false
+
+      - name: Validate AWS target foundation
+        run: tofu validate
+
+      - name: Show provider selection
+        run: tofu providers

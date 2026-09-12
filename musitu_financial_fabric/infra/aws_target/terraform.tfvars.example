@@ -1,0 +1,12 @@
+# Example only. Do not commit real account identifiers, secrets, credentials, or private network allowlists.
+
+target_environment_id   = "prod-zw-primary-01"
+eks_admin_principal_arn = "arn:aws:iam::123456789012:role/REPLACE_WITH_AUTHORIZED_OPERATOR_ROLE"
+
+# Pin only after dependency compatibility and af-south-1 availability/cost review.
+postgres_engine_version = "REPLACE_WITH_EXACT_POSTGRES_VERSION"
+postgres_instance_class = "REPLACE_WITH_APPROVED_RDS_CLASS"
+
+# Keep empty for a private-only EKS API. If public access is temporarily required,
+# provide only explicitly approved operator/VPN CIDRs. 0.0.0.0/0 and ::/0 are rejected.
+eks_public_access_cidrs = []
