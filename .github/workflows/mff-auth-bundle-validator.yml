@@ -23,8 +23,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD^)" = "9c1e2e491991a39608459b576a752462fa004673"
-          echo 'd3fc187dc6b51a21b761fd2197a5648746f8487858a8bd34a2b3bea33533a004  .github/mff-auth-bundle-hardening.py' | sha256sum -c -
+          test "$(git rev-parse HEAD^)" = "1f9ca19813ac909b1f675324c1b46bed16313943"
+          test "$(git hash-object .github/mff-auth-bundle-hardening.py)" = "67a858d32892a3930af2e6e8285dc13dee78d273"
 
       - name: Apply exact-match authorization bundle hardening
         shell: bash

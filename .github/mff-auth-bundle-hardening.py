@@ -65,8 +65,8 @@ replace_once(
 )
 replace_once(
     'docs/production-readiness/README.md',
-    '''Real-funds readiness has two independently pinned evidence inputs: the external authorization manifest and a target-deployment evidence manifest.''',
-    '''Real-funds readiness has independently pinned authorization and target-deployment evidence inputs. The authorization manifest must also bind a read-only mounted authorization-evidence bundle by exact SHA-256, just as the target-deployment manifest binds its target-evidence bundle.'''
+    '''Real-funds readiness now has two independent pinned evidence inputs: the external authorization manifest and a target-deployment evidence manifest.''',
+    '''Real-funds readiness now has independently pinned authorization and target-deployment evidence inputs. The authorization manifest must also bind a read-only mounted authorization-evidence bundle by exact SHA-256, just as the target-deployment manifest binds its target-evidence bundle.'''
 )
 
 # IaC workflow: construct a byte-pinned test-only authorization evidence bundle.
