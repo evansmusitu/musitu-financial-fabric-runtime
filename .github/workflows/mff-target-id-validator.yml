@@ -17,18 +17,33 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          fetch-depth: 3
+          fetch-depth: 4
       - name: Verify exact authority and hardening script
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD^)" = 'b8d51253f2af9afdbfc56d51efb536c6a9919b4f'
-          test "$(git rev-parse HEAD^^)" = 'c645d3a204d9de891315230f3a23a43730677bb9'
+          test "$(git rev-parse HEAD^)" = '0a128be89272fa8933386182eecdf206a2a9c246'
+          test "$(git rev-parse HEAD^^)" = 'b8d51253f2af9afdbfc56d51efb536c6a9919b4f'
+          test "$(git rev-parse HEAD^^^)" = 'c645d3a204d9de891315230f3a23a43730677bb9'
           test "$(git hash-object .github/mff-target-id-hardening.py)" = '3546fea404d8be7dece8afe9446c120fbe71e3f9'
           echo 'd89f2951a2f76cc1fa725e352fcec873af84ec7848c7dcde90b00a02e8de5044  .github/mff-target-id-hardening.py' | sha256sum -c -
       - name: Apply exact target-identity hardening
         run: |
           set -euo pipefail
-          python .github/mff-target-id-hardening.py
+          set +e
+          patch_output="$(python .github/mff-target-id-hardening.py 2>&1)"
+          patch_status=$?
+          set -e
+          test "$patch_status" -eq 1
+          test "$patch_output" = 'docs/production-readiness/CONTROL_MATRIX.md: expected exactly one match, found 0'
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('docs/production-readiness/CONTROL_MATRIX.md')
+          text = p.read_text()
+          old = '| Target activation evidence | Live-funds readiness also requires'
+          new = '| Target identity binding | Deployment manifest target ID must exactly equal independently configured `MUSITU_TARGET_ENVIRONMENT_ID`; missing or mismatched identity closes live funds |\n' + old
+          assert text.count(old) == 1
+          p.write_text(text.replace(old, new, 1))
+          PY
           expected=$'.github/workflows/musitu-financial-fabric-production-iac.yml\ndocs/production-readiness/ACTIVATION_RUNBOOK.md\ndocs/production-readiness/CONTROL_MATRIX.md\nmusitu_financial_fabric/app/config.py\nmusitu_financial_fabric/app/production.py\nmusitu_financial_fabric/infra/production_guard.tf\nmusitu_financial_fabric/tests/test_production_controls.py'
           actual="$(git diff --name-only | sort)"
           test "$actual" = "$expected" || { echo "Unexpected mutation set:"; printf '%s\n' "$actual"; exit 1; }
