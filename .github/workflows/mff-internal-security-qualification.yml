@@ -63,7 +63,7 @@ jobs:
           print("BOUNDARY: SBOM is internal dependency evidence, not independent supply-chain certification")
           PY
 
-      - name: Scan repository content for likely committed secrets
+      - name: Scan repository content with exact reviewed-candidate adjudication
         run: |
           cd ..
           detect-secrets scan --all-files --exclude-files '(^|/)\.git/' > "$RUNNER_TEMP/mff-detect-secrets.json"
@@ -76,17 +76,38 @@ jobs:
           report_path = Path(sys.argv[1])
           raw = report_path.read_bytes()
           report = json.loads(raw)
-          findings = []
+          actual = set()
           for filename, rows in sorted((report.get("results") or {}).items()):
               for row in rows or []:
-                  findings.append((filename, row.get("type"), row.get("line_number")))
-          if findings:
-              for filename, kind, line_number in findings:
-                  print("POTENTIAL_SECRET", filename, kind, line_number)
-              raise SystemExit(f"potential committed secrets require adjudication: {len(findings)}")
-          print("PASS: no likely committed secrets detected by detect-secrets 1.5.0")
+                  actual.add((filename, row.get("type"), row.get("line_number")))
+
+          adjudication_path = Path("docs/internal-security/SECRET_SCAN_ADJUDICATION_20260912.json")
+          adjudication = json.loads(adjudication_path.read_text(encoding="utf-8"))
+          if adjudication.get("schema_version") != "mff.internal-secret-scan-adjudication.v1":
+              raise SystemExit("unexpected secret-scan adjudication schema")
+          rows = adjudication.get("adjudications") or []
+          if adjudication.get("reviewed_finding_count") != len(rows):
+              raise SystemExit("secret-scan adjudication count mismatch")
+          if any(row.get("disposition") != "false_positive" for row in rows):
+              raise SystemExit("secret-scan adjudication contains a non-false-positive disposition")
+          expected = {(row.get("file"), row.get("detector"), row.get("line")) for row in rows}
+          if len(expected) != len(rows):
+              raise SystemExit("secret-scan adjudication contains duplicate or malformed rows")
+
+          unexpected = sorted(actual - expected, key=lambda value: (str(value[0]), str(value[1]), int(value[2] or -1)))
+          disappeared = sorted(expected - actual, key=lambda value: (str(value[0]), str(value[1]), int(value[2] or -1)))
+          if unexpected or disappeared:
+              for filename, kind, line_number in unexpected:
+                  print("UNREVIEWED_CANDIDATE", filename, kind, line_number)
+              for filename, kind, line_number in disappeared:
+                  print("REVIEWED_CANDIDATE_DISAPPEARED", filename, kind, line_number)
+              raise SystemExit(
+                  f"secret-scan candidate set drifted: unexpected={len(unexpected)} disappeared={len(disappeared)}"
+              )
+          print(f"PASS: detect-secrets candidate set exactly matches {len(expected)} individually reviewed false positives")
           print(f"SECRET_SCAN_SHA256={hashlib.sha256(raw).hexdigest()}")
-          print("BOUNDARY: this is MUSITU internal repository scanning, not external secret-management certification")
+          print(f"ADJUDICATION_SHA256={hashlib.sha256(adjudication_path.read_bytes()).hexdigest()}")
+          print("BOUNDARY: this is MUSITU internal repository scanning and adjudication, not external secret-management certification")
           PY
 
       - name: Validate structured internal threat model and evidence references
