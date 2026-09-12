@@ -7,58 +7,47 @@
     {
       "name": "benchmark_evidence",
       "script": "musitu_financial_fabric/scripts/validate_benchmark_evidence.py",
-      "args": [
-        "--contract"
-      ]
+      "args": ["--contract"]
     },
     {
       "name": "recovery_profiles",
       "script": "musitu_financial_fabric/scripts/validate_recovery_profiles.py",
-      "args": [
-        "--contract"
-      ]
+      "args": ["--contract"]
     },
     {
       "name": "identity_secret_profiles",
       "script": "musitu_financial_fabric/scripts/validate_identity_secret_profiles.py",
-      "args": [
-        "--contract"
-      ]
+      "args": ["--contract"]
     },
     {
       "name": "operational_profiles",
       "script": "musitu_financial_fabric/scripts/validate_operational_profiles.py",
-      "args": [
-        "--contract"
-      ]
+      "args": ["--contract"]
     },
     {
       "name": "supply_persistence_profiles",
       "script": "musitu_financial_fabric/scripts/validate_supply_persistence_profiles.py",
-      "args": [
-        "--contract"
-      ]
+      "args": ["--contract"]
+    },
+    {
+      "name": "persistence_target_evidence",
+      "script": "musitu_financial_fabric/scripts/validate_persistence_target_evidence.py",
+      "args": ["--contract"]
     },
     {
       "name": "resource_profiles",
       "script": "musitu_financial_fabric/scripts/validate_resource_profiles.py",
-      "args": [
-        "--contract"
-      ]
+      "args": ["--contract"]
     },
     {
       "name": "manifest_profiles",
       "script": "musitu_financial_fabric/scripts/validate_manifest_profiles.py",
-      "args": [
-        "--contract"
-      ]
+      "args": ["--contract"]
     }
   ],
   "structural_deployability_gate": {
     "script": "musitu_financial_fabric/scripts/validate_provider_neutral_target.py",
-    "args": [
-      "--deployable"
-    ],
+    "args": ["--deployable"],
     "non_deployable_exit": 3
   },
   "qualification_rule": "The canonical gate fails closed if any semantic contract validator fails. Only after every semantic gate passes may the structural deployability result be accepted."

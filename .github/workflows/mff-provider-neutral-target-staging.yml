@@ -12,6 +12,7 @@ on:
       - 'musitu_financial_fabric/scripts/validate_identity_secret_profiles.py'
       - 'musitu_financial_fabric/scripts/validate_operational_profiles.py'
       - 'musitu_financial_fabric/scripts/validate_supply_persistence_profiles.py'
+      - 'musitu_financial_fabric/scripts/validate_persistence_target_evidence.py'
       - 'musitu_financial_fabric/scripts/validate_resource_profiles.py'
       - 'musitu_financial_fabric/scripts/validate_manifest_profiles.py'
       - 'musitu_financial_fabric/stack/required-components.json'
@@ -68,6 +69,12 @@ jobs:
 
       - name: Validate resolved image provenance and persistence profiles
         run: python musitu_financial_fabric/scripts/validate_supply_persistence_profiles.py --contract
+
+      - name: Exercise persistence target-evidence association gate
+        run: python musitu_financial_fabric/scripts/validate_persistence_target_evidence.py --self-test
+
+      - name: Validate resolved persistence target-evidence descriptors
+        run: python musitu_financial_fabric/scripts/validate_persistence_target_evidence.py --contract
 
       - name: Exercise measured resource-profile integrity gate
         run: python musitu_financial_fabric/scripts/validate_resource_profiles.py --self-test

@@ -19,6 +19,7 @@ EXPECTED_SEMANTIC_GATES = (
     ("identity_secret_profiles", "validate_identity_secret_profiles.py"),
     ("operational_profiles", "validate_operational_profiles.py"),
     ("supply_persistence_profiles", "validate_supply_persistence_profiles.py"),
+    ("persistence_target_evidence", "validate_persistence_target_evidence.py"),
     ("resource_profiles", "validate_resource_profiles.py"),
     ("manifest_profiles", "validate_manifest_profiles.py"),
 )
