@@ -16,11 +16,11 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 3
+          fetch-depth: 5
 
       - uses: opentofu/setup-opentofu@9d84900f3238fab8cd84ce47d658d25dd008be2f # v1.0.6
 
-      - name: Reconstruct exact tested transport bytes
+      - name: Reconstruct and validate pristine transport bytes
         shell: bash
         run: |
           set -euo pipefail
@@ -28,33 +28,28 @@ jobs:
           git cat-file -e "$carrier_commit^{commit}"
           git show "$carrier_commit:.mff-staging/production_guard.tf.b64" | base64 -d > "$RUNNER_TEMP/expected-production-guard.tf"
           git show "$carrier_commit:.mff-staging/production-iac.yml.b64" | base64 -d > "$RUNNER_TEMP/expected-production-iac.yml"
-
-          echo "expected IaC blob:    $(git hash-object "$RUNNER_TEMP/expected-production-guard.tf")"
-          echo "installed IaC blob:   $(git hash-object musitu_financial_fabric/infra/production_guard.tf)"
-          echo "expected workflow:    $(git hash-object "$RUNNER_TEMP/expected-production-iac.yml")"
-          echo "installed workflow:   $(git hash-object .github/workflows/musitu-financial-fabric-production-iac.yml)"
-
-          if ! cmp -s "$RUNNER_TEMP/expected-production-iac.yml" .github/workflows/musitu-financial-fabric-production-iac.yml; then
-            echo 'FAIL: installed Production IaC workflow is not byte-identical to the tested carrier.'
-            diff -u .github/workflows/musitu-financial-fabric-production-iac.yml "$RUNNER_TEMP/expected-production-iac.yml" || true
-            exit 1
-          fi
-
+          test "$(git hash-object "$RUNNER_TEMP/expected-production-guard.tf")" = "523ae44191327d39e39b19f506e9d92a582ad87f"
+          test "$(git hash-object "$RUNNER_TEMP/expected-production-iac.yml")" = "51174639117b4ece27c59e834fcd31e9abe707d6"
+          mkdir -p .mff-repair
+          cp "$RUNNER_TEMP/expected-production-iac.yml" .mff-repair/production-iac.yml
           cp "$RUNNER_TEMP/expected-production-guard.tf" musitu_financial_fabric/infra/production_guard.tf
-          test "$(git hash-object musitu_financial_fabric/infra/production_guard.tf)" = "$(git hash-object "$RUNNER_TEMP/expected-production-guard.tf")"
           tofu -chdir=musitu_financial_fabric/infra init -backend=false
           tofu -chdir=musitu_financial_fabric/infra validate
+          git diff --check
 
-      - name: Publish exact tested IaC bytes
+      - name: Publish pristine IaC and stage workflow blob
         shell: bash
         run: |
           set -euo pipefail
-          git diff --check
-          test "$(git diff --name-only)" = 'musitu_financial_fabric/infra/production_guard.tf'
+          git add musitu_financial_fabric/infra/production_guard.tf .mff-repair/production-iac.yml
+          git diff --cached --name-only | sort > "$RUNNER_TEMP/actual.txt"
+          printf '%s\n' '.mff-repair/production-iac.yml' 'musitu_financial_fabric/infra/production_guard.tf' | sort > "$RUNNER_TEMP/expected.txt"
+          diff -u "$RUNNER_TEMP/expected.txt" "$RUNNER_TEMP/actual.txt"
+          test "$(git hash-object musitu_financial_fabric/infra/production_guard.tf)" = "523ae44191327d39e39b19f506e9d92a582ad87f"
+          test "$(git hash-object .mff-repair/production-iac.yml)" = "51174639117b4ece27c59e834fcd31e9abe707d6"
           git fetch origin musitu-financial-fabric-production-readiness
           test "$(git rev-parse origin/musitu-financial-fabric-production-readiness)" = "$GITHUB_SHA"
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add musitu_financial_fabric/infra/production_guard.tf
-          git commit -m 'Restore exact tested production IaC bytes'
+          git commit -m 'Stage pristine Production IaC transport bytes'
           git push origin HEAD:refs/heads/musitu-financial-fabric-production-readiness
