@@ -1,7 +1,11 @@
 {
   "target_environment_id": "REPLACE-WITH-IMMUTABLE-TARGET-ENVIRONMENT-ID",
-  "verified_at": "REPLACE-WITH-RFC3339-UTC-VERIFICATION-TIMESTAMP",
-  "expires_at": "REPLACE-WITH-RFC3339-UTC-EXPIRY",
+  "verified_at": "2026-09-12T00:00:00+00:00",
+  "expires_at": "2026-09-13T00:00:00+00:00",
+  "evidence_bundle": {
+    "path": "REPLACE-WITH-MOUNTED-TARGET-EVIDENCE-BUNDLE-PATH",
+    "sha256": "REPLACE-WITH-64-HEX-TARGET-EVIDENCE-BUNDLE-SHA256"
+  },
   "release": {
     "commit_sha": "REPLACE-WITH-40-HEX-RUNTIME-COMMIT",
     "image_digest": "sha256:REPLACE-WITH-64-HEX-RUNNING-IMAGE-DIGEST",
@@ -9,17 +13,47 @@
     "authorization_manifest_sha256": "REPLACE-WITH-64-HEX-AUTHORIZATION-MANIFEST-SHA256"
   },
   "evidence": {
-    "dark_deployment": {"status": "pending", "evidence_ref": ""},
-    "monitoring_alerting": {"status": "pending", "evidence_ref": ""},
-    "postgres_backup_restore": {"status": "pending", "evidence_ref": ""},
-    "tigerbeetle_recovery": {"status": "pending", "evidence_ref": ""},
-    "provider_reconciliation": {"status": "pending", "evidence_ref": ""},
-    "activation_rollback_drill": {"status": "pending", "evidence_ref": ""}
+    "dark_deployment": {
+      "status": "pending",
+      "evidence_ref": ""
+    },
+    "monitoring_alerting": {
+      "status": "pending",
+      "evidence_ref": ""
+    },
+    "postgres_backup_restore": {
+      "status": "pending",
+      "evidence_ref": ""
+    },
+    "tigerbeetle_recovery": {
+      "status": "pending",
+      "evidence_ref": ""
+    },
+    "provider_reconciliation": {
+      "status": "pending",
+      "evidence_ref": ""
+    },
+    "activation_rollback_drill": {
+      "status": "pending",
+      "evidence_ref": ""
+    }
   },
   "independent_kill_controls": {
-    "network": {"status": "pending", "independent_of_application": false, "evidence_ref": ""},
-    "provider": {"status": "pending", "independent_of_application": false, "evidence_ref": ""},
-    "settlement": {"status": "pending", "independent_of_application": false, "evidence_ref": ""}
+    "network": {
+      "status": "pending",
+      "independent_of_application": false,
+      "evidence_ref": ""
+    },
+    "provider": {
+      "status": "pending",
+      "independent_of_application": false,
+      "evidence_ref": ""
+    },
+    "settlement": {
+      "status": "pending",
+      "independent_of_application": false,
+      "evidence_ref": ""
+    }
   },
-  "notes": "Example structure only. Populate only from executed target-environment evidence and authentic independent controls. This file does not create, infer, or self-approve any external authorization or kill control."
+  "notes": "Example structure only. The evidence bundle must contain retained target-environment drill/control evidence and its exact bytes must match evidence_bundle.sha256. A matching hash proves integrity only; it does not create, infer, or self-approve regulator, sponsor-bank, rail-provider, data-protection, independent-security, card/network/custody, or independent kill-control authorization."
 }
