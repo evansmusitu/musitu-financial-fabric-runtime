@@ -16,6 +16,7 @@ on:
       - 'musitu_financial_fabric/scripts/validate_supply_persistence_profiles.py'
       - 'musitu_financial_fabric/scripts/validate_persistence_target_evidence.py'
       - 'musitu_financial_fabric/scripts/validate_resource_profiles.py'
+      - 'musitu_financial_fabric/scripts/validate_resource_target_evidence.py'
       - 'musitu_financial_fabric/scripts/validate_manifest_profiles.py'
       - 'musitu_financial_fabric/stack/required-components.json'
       - '.github/workflows/mff-provider-neutral-target-staging.yml'
@@ -74,6 +75,10 @@ jobs:
         run: python musitu_financial_fabric/scripts/validate_resource_profiles.py --self-test
       - name: Validate resolved measured resource profiles
         run: python musitu_financial_fabric/scripts/validate_resource_profiles.py --contract
+      - name: Exercise resource target-evidence association gate
+        run: python musitu_financial_fabric/scripts/validate_resource_target_evidence.py --self-test
+      - name: Validate resolved resource target-evidence descriptors
+        run: python musitu_financial_fabric/scripts/validate_resource_target_evidence.py --contract
       - name: Exercise rendered manifest evidence integrity gate
         run: python musitu_financial_fabric/scripts/validate_manifest_profiles.py --self-test
       - name: Validate resolved runtime manifests
