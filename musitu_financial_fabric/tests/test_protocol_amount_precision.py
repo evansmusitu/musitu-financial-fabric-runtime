@@ -78,6 +78,9 @@ def test_open_payments_requires_explicit_asset_scale():
         open_payments_incoming({"incomingAmount": {"value": "1234", "assetCode": "USD"}})
 
 
-def test_protocol_currency_must_be_explicit_three_letter_code():
-    with pytest.raises(ValueError, match="three-letter"):
+def test_protocol_currency_must_be_explicit_three_letter_ascii_code():
+    with pytest.raises(ValueError, match="three-letter ASCII"):
         gsma_transaction({"amount": {"amount": "1.00", "currency": ""}})
+
+    with pytest.raises(ValueError, match="three-letter ASCII"):
+        gsma_transaction({"amount": {"amount": "1.00", "currency": "ΕUR"}})

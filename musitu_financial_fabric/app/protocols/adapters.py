@@ -19,8 +19,8 @@ class NormalizedIntent:
 
 def _currency(value: object) -> str:
     code = str(value or "").strip().upper()
-    if len(code) != 3 or not code.isalpha():
-        raise ValueError("currency must be an explicit three-letter code")
+    if len(code) != 3 or not code.isascii() or not code.isalpha():
+        raise ValueError("currency must be an explicit three-letter ASCII code")
     return code
 
 
