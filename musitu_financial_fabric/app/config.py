@@ -84,6 +84,7 @@ class Settings:
     authorization_manifest_sha256: str = field(default_factory=lambda: _str("MUSITU_AUTHORIZATION_MANIFEST_SHA256").lower())
     deployment_evidence_manifest_path: str = field(default_factory=lambda: _str("MUSITU_DEPLOYMENT_EVIDENCE_MANIFEST_PATH"))
     deployment_evidence_manifest_sha256: str = field(default_factory=lambda: _str("MUSITU_DEPLOYMENT_EVIDENCE_MANIFEST_SHA256").lower())
+    target_environment_id: str = field(default_factory=lambda: _str("MUSITU_TARGET_ENVIRONMENT_ID"))
     build_commit: str = field(default_factory=lambda: _str("MUSITU_BUILD_COMMIT").lower())
     release_image_digest: str = field(default_factory=lambda: _str("MUSITU_RELEASE_IMAGE_DIGEST").lower())
 

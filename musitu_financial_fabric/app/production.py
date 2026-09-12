@@ -312,12 +312,19 @@ def _deployment_evidence_checks(cfg: Settings) -> list[ProductionCheck]:
     ))
 
     target_environment_id = manifest.get("target_environment_id")
-    target_ok = isinstance(target_environment_id, str) and bool(target_environment_id.strip())
+    configured_target_id = cfg.target_environment_id.strip()
+    target_ok = (
+        bool(configured_target_id)
+        and isinstance(target_environment_id, str)
+        and target_environment_id.strip() == configured_target_id
+    )
     checks.append(ProductionCheck(
         "deployment_target_identity",
         target_ok,
         "deployment",
-        "target production environment has an explicit immutable evidence identity" if target_ok else "target production environment identity is missing",
+        "target deployment evidence matches the configured immutable environment identity"
+        if target_ok
+        else "target deployment evidence does not match the configured immutable environment identity",
     ))
 
     release = manifest.get("release")

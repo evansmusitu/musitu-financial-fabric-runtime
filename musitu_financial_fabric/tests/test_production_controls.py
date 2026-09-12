@@ -39,6 +39,7 @@ def _base_production(**overrides):
         max_single_payment_minor=1000,
         build_commit="a" * 40,
         release_image_digest="sha256:" + "b" * 64,
+        target_environment_id="test-only-production-target",
     )
     values.update(overrides)
     return Settings(**values)
@@ -95,12 +96,13 @@ def _passed_deployment_manifest(
     rollback_image_digest: str = "sha256:" + "c" * 64,
     expires_at: str | None = None,
     provider_kill_independent: bool = True,
+    target_environment_id: str = "test-only-production-target",
 ) -> tuple[str, str]:
     evidence_bundle_path = tmp_path / "target-evidence-bundle.bin"
     evidence_bundle_raw = b"test-only-target-evidence-bundle"
     evidence_bundle_path.write_bytes(evidence_bundle_raw)
     manifest = {
-        "target_environment_id": "test-only-production-target",
+        "target_environment_id": target_environment_id,
         "verified_at": (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat(),
         "expires_at": expires_at or (datetime.now(timezone.utc) + timedelta(days=1)).isoformat(),
         "evidence_bundle": {
@@ -241,6 +243,25 @@ def test_production_authorization_can_open_live_runtime(tmp_path):
     )
     assert production_readiness(cfg)["ready_for_live_funds"] is True
     assert_live_funds_allowed(cfg)
+
+
+def test_target_deployment_identity_must_match_configured_target(tmp_path):
+    path, digest = _approved_manifest(tmp_path, funds_scope="production")
+    deployment_path, deployment_digest = _passed_deployment_manifest(
+        tmp_path,
+        authorization_digest=digest,
+        target_environment_id="wrong-production-target",
+    )
+    cfg = _base_production(
+        production_mode="live",
+        authorization_manifest_path=path,
+        authorization_manifest_sha256=digest,
+        deployment_evidence_manifest_path=deployment_path,
+        deployment_evidence_manifest_sha256=deployment_digest,
+    )
+    result = production_readiness(cfg)
+    assert result["ready_for_live_funds"] is False
+    assert any(row["key"] == "deployment_target_identity" and not row["ok"] for row in result["checks"])
 
 
 def test_target_deployment_manifest_pin_is_fail_closed(tmp_path):

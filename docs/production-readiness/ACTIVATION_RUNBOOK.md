@@ -50,6 +50,7 @@ Retain the actual target-environment drill/control artifacts as a dedicated evid
 
 The retained target manifest must bind all of the following:
 
+- the exact immutable production target identity configured independently as `MUSITU_TARGET_ENVIRONMENT_ID`;
 - the exact runtime commit embedded in the image as `MUSITU_BUILD_COMMIT`;
 - the immutable digest of the image actually running in the target environment, configured as `MUSITU_RELEASE_IMAGE_DIGEST`;
 - a distinct immutable rollback image digest;
@@ -62,6 +63,7 @@ Compute the exact SHA-256 of the retained deployment-evidence file and configure
 
 - `MUSITU_DEPLOYMENT_EVIDENCE_MANIFEST_PATH`
 - `MUSITU_DEPLOYMENT_EVIDENCE_MANIFEST_SHA256`
+- `MUSITU_TARGET_ENVIRONMENT_ID`
 
 The deployment-evidence manifest and evidence-bundle hashes are integrity bindings only. They do not create regulator approval, provider authorization, independent security certification, data-protection authorization, card/network/custody approval, or independent kill controls. Keep authentic evidence outside the source repository under the appropriate operational controls.
 
