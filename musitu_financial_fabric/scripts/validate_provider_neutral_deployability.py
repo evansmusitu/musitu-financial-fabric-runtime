@@ -16,6 +16,7 @@ POLICY_SCHEMA = "mff.deployability-composition-policy.v1"
 EXPECTED_SEMANTIC_GATES = (
     ("benchmark_evidence", "validate_benchmark_evidence.py"),
     ("recovery_profiles", "validate_recovery_profiles.py"),
+    ("recovery_design_evidence", "validate_recovery_design_evidence.py"),
     ("identity_secret_profiles", "validate_identity_secret_profiles.py"),
     ("identity_secret_target_evidence", "validate_identity_secret_target_evidence.py"),
     ("operational_profiles", "validate_operational_profiles.py"),

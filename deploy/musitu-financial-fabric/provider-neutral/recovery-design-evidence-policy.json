@@ -1,0 +1,37 @@
+{
+  "schema_version": "mff.recovery-design-evidence-policy.v1",
+  "authoritative_runtime_base_commit": "80c72d9f711561dd46337d7286ee7bfb2bb5e658",
+  "source_recovery_policy_schema_version": "mff.recovery-profile-policy.v2",
+  "recovery_profile_schema_version": "mff.runtime-recovery-profile.v1",
+  "procedure_schema_version": "mff.recovery-procedure.v1",
+  "profile_semantics_projection": "canonical_profile_without_restore_or_restart_procedure_sha256",
+  "scoped_obligations": {
+    "postgres": {
+      "profile_mode": "backup_restore",
+      "target_evidence_key": "postgres_backup_restore"
+    },
+    "tigerbeetle": {
+      "profile_mode": "recovery",
+      "target_evidence_key": "tigerbeetle_recovery"
+    }
+  },
+  "procedure_required_sections": [
+    "preconditions",
+    "steps",
+    "success_criteria",
+    "integrity_verification",
+    "failure_handling",
+    "rollback_or_restart"
+  ],
+  "step_required_fields": [
+    "step_id",
+    "action",
+    "verification"
+  ],
+  "procedure_required_metadata": [
+    "validation_method",
+    "verifier",
+    "trust_model"
+  ],
+  "claim_boundary": "Static scoped recovery-design evidence association only. Passing this gate does not prove a restore/restart drill, target execution, recovery success, deployment, production authorization, or independent validation."
+}
