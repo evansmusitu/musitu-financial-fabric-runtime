@@ -19,6 +19,15 @@ BENCHMARK = TARGET / "resource-benchmark-plan.json"
 OCI_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 EXPECTED_COUNT = 26
 EXPECTED_NAMESPACE = "musitu-financial-fabric-target-staging"
+EXPECTED_BASE_COMMIT = "80c72d9f711561dd46337d7286ee7bfb2bb5e658"
+EXPECTED_KUSTOMIZATION = (
+    "apiVersion: kustomize.config.k8s.io/v1beta1\n"
+    "kind: Kustomization\n"
+    "resources:\n"
+    "  - foundation/namespace.json\n"
+    "  - foundation/default-deny-network-policy.json\n"
+    "  - foundation/no-workloads-quota.json\n"
+)
 DEPLOYMENT_FIELDS = (
     "manifest_path",
     "image_digest",
@@ -78,6 +87,8 @@ def validate_structure() -> list[str]:
     rows = contract.get("runtimes", [])
     keys = [str(row.get("key", "")) for row in rows if isinstance(row, dict)]
     contract_map = {str(row.get("key")): str(row.get("health_env")) for row in rows if isinstance(row, dict)}
+    if contract.get("authoritative_runtime_base_commit") != EXPECTED_BASE_COMMIT:
+        errors.append("contract is not anchored to the sealed authoritative release commit")
     if contract.get("expected_required_runtime_count") != EXPECTED_COUNT:
         errors.append("contract expected runtime count is not 26")
     if len(rows) != EXPECTED_COUNT or len(set(keys)) != EXPECTED_COUNT:
@@ -132,6 +143,8 @@ def validate_structure() -> list[str]:
 
     if not KUSTOMIZATION.is_file():
         errors.append("kustomization.yaml is missing")
+    elif KUSTOMIZATION.read_text(encoding="utf-8") != EXPECTED_KUSTOMIZATION:
+        errors.append("kustomization composition does not exactly preserve the fail-closed foundation")
     if not BENCHMARK.is_file():
         errors.append("resource benchmark plan is missing")
     else:
@@ -187,6 +200,7 @@ def main() -> int:
                 print(f"STRUCTURE BLOCKER: {error}")
             return 2
         print("PASS: exact 26-runtime contract and fail-closed provider-neutral foundation are structurally valid")
+        print("PASS: contract is pinned to the sealed release and Kustomize composition preserves all fail-closed foundation resources")
         print("PASS: resolved deployment/profile fields must reference existing repository files")
         print("BOUNDARY: static architecture only; no deployment or production authorization is implied")
         return 0
