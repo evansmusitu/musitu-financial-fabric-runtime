@@ -31,6 +31,7 @@ EXPECTED_SEMANTIC_GATES = (
     ("kubernetes_manifest_semantics", "validate_kubernetes_manifest_semantics.py"),
     ("kubernetes_manifest_security_hardening", "validate_kubernetes_manifest_security.py"),
     ("kubernetes_workload_binding", "validate_kubernetes_workload_binding.py"),
+    ("kubernetes_controller_selector_satisfaction", "validate_kubernetes_controller_selector_satisfaction.py"),
 )
 STRUCTURAL_GATE = "validate_provider_neutral_target.py"
 RunCallable = Callable[..., Any]
