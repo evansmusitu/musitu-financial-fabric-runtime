@@ -74,6 +74,9 @@ def _assert_proven_production_runtime() -> None:
 class Settings:
     db_path: str = field(default_factory=lambda: _str("MUSITU_DB_PATH", "./musitu_network.db"))
     metadata_db_url: str = field(default_factory=lambda: _str("MUSITU_METADATA_DB_URL"))
+    metadata_db_connect_timeout_seconds: int = field(default_factory=lambda: int(_str("MUSITU_METADATA_DB_CONNECT_TIMEOUT_SECONDS", "5")))
+    metadata_db_statement_timeout_seconds: int = field(default_factory=lambda: int(_str("MUSITU_METADATA_DB_STATEMENT_TIMEOUT_SECONDS", "10")))
+    metadata_db_lock_timeout_seconds: int = field(default_factory=lambda: int(_str("MUSITU_METADATA_DB_LOCK_TIMEOUT_SECONDS", "5")))
     environment: str = field(default_factory=lambda: _str("MUSITU_ENV", "sandbox").lower())
     live_funds_enabled: bool = field(default_factory=lambda: _bool("MUSITU_LIVE_FUNDS_ENABLED", False))
     production_mode: str = field(default_factory=lambda: _str("MUSITU_PRODUCTION_MODE", "shadow").lower())
@@ -119,6 +122,15 @@ class Settings:
     max_single_payment_minor: int = field(default_factory=lambda: int(_str("MUSITU_MAX_SINGLE_PAYMENT_MINOR", "1000000")))
 
     def __post_init__(self) -> None:
+        if self.uses_postgres:
+            if not 1 <= self.metadata_db_connect_timeout_seconds <= 30:
+                raise ValueError("PostgreSQL connect timeout must be between 1 and 30 seconds")
+            if not 1 <= self.metadata_db_statement_timeout_seconds <= 60:
+                raise ValueError("PostgreSQL statement timeout must be between 1 and 60 seconds")
+            if not 1 <= self.metadata_db_lock_timeout_seconds <= 30:
+                raise ValueError("PostgreSQL lock timeout must be between 1 and 30 seconds")
+            if self.metadata_db_lock_timeout_seconds > self.metadata_db_statement_timeout_seconds:
+                raise ValueError("PostgreSQL lock timeout must not exceed statement timeout")
         if self.environment == "production" and self.uses_postgres and self.ledger_backend == "tigerbeetle":
             if not 1 <= self.tigerbeetle_operation_timeout_seconds <= 30:
                 raise ValueError("production TigerBeetle operation timeout must be between 1 and 30 seconds")

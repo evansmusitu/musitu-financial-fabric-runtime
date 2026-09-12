@@ -74,7 +74,8 @@ class _PostgresConnection:
             # plain BEGIN does not, so concurrent distinct idempotency keys could
             # both observe the same pre-spend total and overrun a mandate's daily
             # ceiling. Serialize only reservations for the same mandate for the
-            # duration of the surrounding transaction.
+            # duration of the surrounding transaction. The connection-level
+            # lock_timeout below makes this fail closed instead of waiting forever.
             self._conn.execute(
                 "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
                 (str(bound[0]),),
@@ -103,7 +104,15 @@ def connect():
             from psycopg.rows import dict_row
         except ImportError as exc:
             raise RuntimeError("psycopg is required for PostgreSQL metadata storage") from exc
-        conn = psycopg.connect(settings.metadata_db_url, autocommit=True, row_factory=dict_row)
+        statement_ms = settings.metadata_db_statement_timeout_seconds * 1000
+        lock_ms = settings.metadata_db_lock_timeout_seconds * 1000
+        conn = psycopg.connect(
+            settings.metadata_db_url,
+            autocommit=True,
+            row_factory=dict_row,
+            connect_timeout=settings.metadata_db_connect_timeout_seconds,
+            options=f"-c statement_timeout={statement_ms} -c lock_timeout={lock_ms}",
+        )
         wrapper = _PostgresConnection(conn)
         try:
             yield wrapper
