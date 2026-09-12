@@ -124,6 +124,7 @@ jobs:
             -var="authorization_manifest_sha256=$digest"
             -var="deployment_evidence_manifest_path=$deployment"
             -var="deployment_evidence_manifest_sha256=$deployment_digest"
+            -var='target_environment_id=test-only-production-target'
             -var="release_commit=$release_commit"
             -var="release_image_digest=$release_image"
             -var='production_enabled_rails=["ecocash"]'
@@ -134,8 +135,17 @@ jobs:
           tofu -chdir=infra plan -input=false -lock=false -refresh=false "${common[@]}" \
             -out="$RUNNER_TEMP/valid.tfplan"
 
+          wrong_target=("${common[@]}")
+          wrong_target[7]="-var=target_environment_id=wrong-production-target"
+          if tofu -chdir=infra plan -input=false -lock=false -refresh=false "${wrong_target[@]}" \
+            > "$RUNNER_TEMP/wrong-target.log" 2>&1; then
+            echo 'FAIL: wrong production target identity was accepted'
+            exit 1
+          fi
+          assert_log_contains "$RUNNER_TEMP/wrong-target.log" 'exact configured target identity'
+
           if tofu -chdir=infra plan -input=false -lock=false -refresh=false \
-            "${common[@]:0:9}" \
+            "${common[@]:0:10}" \
             -var='production_enabled_rails=["ecocash"]' \
             -var='production_enabled_currencies=["USD","EUR"]' \
             -var='max_single_payment_minor=1000' \
@@ -146,7 +156,7 @@ jobs:
           assert_log_contains "$RUNNER_TEMP/overbroad-currency.log" 'exact deployment perimeter'
 
           if tofu -chdir=infra plan -input=false -lock=false -refresh=false \
-            "${common[@]:0:9}" \
+            "${common[@]:0:10}" \
             -var='production_enabled_rails=["ecocash"]' \
             -var='production_enabled_currencies=["USD"]' \
             -var='max_single_payment_minor=1001' \
@@ -164,6 +174,7 @@ jobs:
             -var='authorization_manifest_sha256=0000000000000000000000000000000000000000000000000000000000000000' \
             -var="deployment_evidence_manifest_path=$deployment" \
             -var="deployment_evidence_manifest_sha256=$deployment_digest" \
+            -var='target_environment_id=test-only-production-target' \
             -var="release_commit=$release_commit" \
             -var="release_image_digest=$release_image" \
             -var='production_enabled_rails=["ecocash"]' \
@@ -192,6 +203,7 @@ jobs:
             -var="authorization_manifest_sha256=$expired_digest" \
             -var="deployment_evidence_manifest_path=$deployment" \
             -var="deployment_evidence_manifest_sha256=$deployment_digest" \
+            -var='target_environment_id=test-only-production-target' \
             -var="release_commit=$release_commit" \
             -var="release_image_digest=$release_image" \
             -var='production_enabled_rails=["ecocash"]' \
@@ -231,6 +243,7 @@ jobs:
             -var="authorization_manifest_sha256=$digest" \
             -var="deployment_evidence_manifest_path=$tampered" \
             -var="deployment_evidence_manifest_sha256=$deployment_digest" \
+            -var='target_environment_id=test-only-production-target' \
             -var="release_commit=$release_commit" \
             -var="release_image_digest=$release_image" \
             -var='production_enabled_rails=["ecocash"]' \
@@ -259,6 +272,7 @@ jobs:
             -var="authorization_manifest_sha256=$digest" \
             -var="deployment_evidence_manifest_path=$nonindependent" \
             -var="deployment_evidence_manifest_sha256=$nonindependent_digest" \
+            -var='target_environment_id=test-only-production-target' \
             -var="release_commit=$release_commit" \
             -var="release_image_digest=$release_image" \
             -var='production_enabled_rails=["ecocash"]' \
@@ -290,6 +304,7 @@ jobs:
             -var="authorization_manifest_sha256=$digest" \
             -var="deployment_evidence_manifest_path=$bad_bundle_deployment" \
             -var="deployment_evidence_manifest_sha256=$bad_bundle_deployment_digest" \
+            -var='target_environment_id=test-only-production-target' \
             -var="release_commit=$release_commit" \
             -var="release_image_digest=$release_image" \
             -var='production_enabled_rails=["ecocash"]' \

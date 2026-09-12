@@ -50,6 +50,12 @@ variable "deployment_evidence_manifest_sha256" {
   sensitive   = true
 }
 
+variable "target_environment_id" {
+  type        = string
+  description = "Immutable identity of the exact production target this deployment is permitted to activate."
+  default     = ""
+}
+
 variable "release_commit" {
   type        = string
   description = "Exact 40-hex source revision embedded in the running release."
@@ -177,7 +183,10 @@ locals {
     can(regex("^[0-9a-fA-F]{64}$", local.deployment_evidence_bundle_sha256)) &&
     try(filesha256(local.deployment_evidence_bundle_path) == local.deployment_evidence_bundle_sha256, false)
   )
-  deployment_target_identity = trimspace(try(local.deployment_manifest.target_environment_id, "")) != ""
+  deployment_target_identity = (
+    trimspace(var.target_environment_id) != "" &&
+    trimspace(try(local.deployment_manifest.target_environment_id, "")) == trimspace(var.target_environment_id)
+  )
 
   release_commit_matches = (
     can(regex("^[0-9a-fA-F]{40}$", var.release_commit)) &&
@@ -237,6 +246,7 @@ resource "terraform_data" "musitu_production_guard" {
     enabled_rails            = sort(tolist(local.runtime_rails))
     enabled_currencies       = sort(tolist(local.runtime_currencies))
     max_single_payment_minor = var.max_single_payment_minor
+    target_environment_id    = var.target_environment_id
     release_commit           = lower(var.release_commit)
     release_image_digest     = lower(var.release_image_digest)
   }
@@ -272,7 +282,7 @@ resource "terraform_data" "musitu_production_guard" {
         local.deployment_verified_at_valid &&
         local.deployment_not_expired
       )
-      error_message = "Live funds require a byte-pinned target deployment evidence manifest and byte-pinned target evidence bundle bound to the exact release commit, immutable OCI digest, distinct rollback digest, external authorization pin, executed target-environment drills, and independent network/provider/settlement kill controls."
+      error_message = "Live funds require a byte-pinned target deployment evidence manifest and byte-pinned target evidence bundle bound to the exact configured target identity, release commit, immutable OCI digest, distinct rollback digest, external authorization pin, executed target-environment drills, and independent network/provider/settlement kill controls."
     }
   }
 }
