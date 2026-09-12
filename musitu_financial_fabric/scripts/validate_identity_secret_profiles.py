@@ -69,14 +69,17 @@ def _common_errors(key: str, row: dict[str, Any], payload: object, schema: str, 
     errors: list[str] = []
     if not isinstance(payload, dict):
         return ["profile root must be an object"]
+    false_boolean_fields = {
+        "shared_static_credentials",
+        "long_lived_static_bootstrap_credentials",
+        "contains_secret_material",
+        "plaintext_credentials_committed",
+        "long_lived_static_auth_credentials",
+    }
     if payload.get("schema_version") != schema:
         errors.append("profile schema_version is invalid")
     for field in required_fields:
-        if field not in payload or not _nonempty(payload.get(field)) and field not in {
-            "shared_static_credentials",
-            "contains_secret_material",
-            "plaintext_credentials_committed",
-        }:
+        if field not in payload or (not _nonempty(payload.get(field)) and field not in false_boolean_fields):
             errors.append(f"profile missing {field}")
     if payload.get("runtime_key") != key:
         errors.append("profile runtime_key does not match contract row")
@@ -113,6 +116,8 @@ def _identity_errors(key: str, row: dict[str, Any], payload: object, policy: dic
             errors.append(f"workload identity profile missing {field}")
     if payload.get("shared_static_credentials") is not False:
         errors.append("workload identity profile must forbid shared static credentials")
+    if payload.get("long_lived_static_bootstrap_credentials") is not False:
+        errors.append("workload identity profile must forbid long-lived static bootstrap credentials")
     return errors
 
 
@@ -139,6 +144,8 @@ def _secret_errors(key: str, row: dict[str, Any], payload: object, policy: dict[
         errors.append("secret profile must not contain secret material")
     if payload.get("plaintext_credentials_committed") is not False:
         errors.append("secret profile must attest no plaintext credentials are committed")
+    if payload.get("long_lived_static_auth_credentials") is not False:
+        errors.append("secret profile must forbid long-lived static authentication credentials")
     return errors
 
 
@@ -164,6 +171,10 @@ def _policy_errors(policy: object) -> list[str]:
         required = section.get("required_fields")
         if not isinstance(required, list) or not required or any(not isinstance(item, str) or not item for item in required):
             errors.append(f"{section_name} required_fields is invalid")
+    if isinstance(identity, dict) and "long_lived_static_bootstrap_credentials" not in (identity.get("required_fields") or []):
+        errors.append("workload identity policy must require explicit long-lived static bootstrap credential rejection")
+    if isinstance(secrets, dict) and "long_lived_static_auth_credentials" not in (secrets.get("required_fields") or []):
+        errors.append("secret policy must require explicit long-lived static authentication credential rejection")
     return errors
 
 
@@ -199,6 +210,7 @@ def _self_test() -> list[str]:
         "rotation": "self-test",
         "revocation": "self-test",
         "shared_static_credentials": False,
+        "long_lived_static_bootstrap_credentials": False,
     }
     secret = {
         **common,
@@ -211,6 +223,7 @@ def _self_test() -> list[str]:
         "revocation": "self-test",
         "contains_secret_material": False,
         "plaintext_credentials_committed": False,
+        "long_lived_static_auth_credentials": False,
     }
     if _identity_errors("self-test", row, identity, policy):
         failures.append("valid synthetic workload identity profile was rejected")
@@ -222,6 +235,7 @@ def _self_test() -> list[str]:
         ("wrong authority", "authority_runtime", "not-spire"),
         ("wrong standard", "identity_standard", "not-spiffe"),
         ("shared static credentials", "shared_static_credentials", True),
+        ("long-lived static bootstrap credentials", "long_lived_static_bootstrap_credentials", True),
     )
     for label, field, value in identity_mutations:
         candidate = json.loads(json.dumps(identity))
@@ -233,6 +247,7 @@ def _self_test() -> list[str]:
         ("wrong authority", "authority_runtime", "not-openbao"),
         ("embedded secret material", "contains_secret_material", True),
         ("plaintext credentials", "plaintext_credentials_committed", True),
+        ("long-lived static authentication credentials", "long_lived_static_auth_credentials", True),
         ("empty secret classes", "secret_classes", []),
     )
     for label, field, value in secret_mutations:
@@ -284,9 +299,10 @@ def _contract_errors() -> tuple[list[str], int, int, int, int]:
                 except Exception as exc:
                     errors.append(f"{key}: workload identity profile is unreadable ({type(exc).__name__})")
                 else:
-                    for error in _identity_errors(key, row, payload, policy):
+                    profile_errors = _identity_errors(key, row, payload, policy)
+                    for error in profile_errors:
                         errors.append(f"{key}: {error}")
-                    if not _identity_errors(key, row, payload, policy):
+                    if not profile_errors:
                         identity_resolved += 1
         secret_ref = row.get("secret_profile", defaults.get("secret_profile"))
         if secret_ref in (None, "", [], {}):
@@ -301,9 +317,10 @@ def _contract_errors() -> tuple[list[str], int, int, int, int]:
                 except Exception as exc:
                     errors.append(f"{key}: secret profile is unreadable ({type(exc).__name__})")
                 else:
-                    for error in _secret_errors(key, row, payload, policy):
+                    profile_errors = _secret_errors(key, row, payload, policy)
+                    for error in profile_errors:
                         errors.append(f"{key}: {error}")
-                    if not _secret_errors(key, row, payload, policy):
+                    if not profile_errors:
                         secret_resolved += 1
     return errors, identity_resolved, identity_unresolved, secret_resolved, secret_unresolved
 
@@ -321,7 +338,7 @@ def main() -> int:
             for failure in failures:
                 print(f"SELF-TEST FAILURE: {failure}")
             return 4
-        print("PASS: identity/secret profile validator rejects authority drift, static credentials, secret material, and unbound target evidence")
+        print("PASS: identity/secret profile validator rejects authority drift, shared or long-lived static credentials, secret material, and unbound target evidence")
         return 0
 
     errors, identity_resolved, identity_unresolved, secret_resolved, secret_unresolved = _contract_errors()
