@@ -18,7 +18,8 @@
     {"name":"manifest_profiles","script":"musitu_financial_fabric/scripts/validate_manifest_profiles.py","args":["--contract"]},
     {"name":"manifest_target_evidence","script":"musitu_financial_fabric/scripts/validate_manifest_target_evidence.py","args":["--contract"]},
     {"name":"kubernetes_manifest_semantics","script":"musitu_financial_fabric/scripts/validate_kubernetes_manifest_semantics.py","args":["--contract"]},
-    {"name":"kubernetes_manifest_security_hardening","script":"musitu_financial_fabric/scripts/validate_kubernetes_manifest_security.py","args":["--contract"]}
+    {"name":"kubernetes_manifest_security_hardening","script":"musitu_financial_fabric/scripts/validate_kubernetes_manifest_security.py","args":["--contract"]},
+    {"name":"kubernetes_workload_binding","script":"musitu_financial_fabric/scripts/validate_kubernetes_workload_binding.py","args":["--contract"]}
   ],
   "structural_deployability_gate": {
     "script": "musitu_financial_fabric/scripts/validate_provider_neutral_target.py",

@@ -22,6 +22,7 @@ on:
       - 'musitu_financial_fabric/scripts/validate_manifest_target_evidence.py'
       - 'musitu_financial_fabric/scripts/validate_kubernetes_manifest_semantics.py'
       - 'musitu_financial_fabric/scripts/validate_kubernetes_manifest_security.py'
+      - 'musitu_financial_fabric/scripts/validate_kubernetes_workload_binding.py'
       - 'musitu_financial_fabric/stack/required-components.json'
       - '.github/workflows/mff-provider-neutral-target-staging.yml'
   workflow_dispatch:
@@ -103,6 +104,10 @@ jobs:
         run: python musitu_financial_fabric/scripts/validate_kubernetes_manifest_security.py --self-test
       - name: Validate resolved Kubernetes manifest security hardening
         run: python musitu_financial_fabric/scripts/validate_kubernetes_manifest_security.py --contract
+      - name: Exercise Kubernetes controller-to-Pod workload-binding gate
+        run: python musitu_financial_fabric/scripts/validate_kubernetes_workload_binding.py --self-test
+      - name: Validate resolved Kubernetes controller-to-Pod workload binding
+        run: python musitu_financial_fabric/scripts/validate_kubernetes_workload_binding.py --contract
       - name: Exercise canonical deployability composition gate
         run: python musitu_financial_fabric/scripts/validate_provider_neutral_deployability.py --self-test
       - name: Prove canonical target gate is intentionally not deployable yet

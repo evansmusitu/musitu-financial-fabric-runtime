@@ -1,0 +1,11 @@
+{
+  "schema_version": "mff.kubernetes-workload-binding-policy.v1",
+  "authoritative_runtime_base_commit": "80c72d9f711561dd46337d7286ee7bfb2bb5e658",
+  "source_manifest_semantics_policy_schema_version": "mff.kubernetes-manifest-semantics-policy.v1",
+  "required_namespace": "musitu-financial-fabric-target-staging",
+  "required_part_of_label": {"key": "app.kubernetes.io/part-of", "value": "musitu-financial-fabric"},
+  "required_runtime_label_key": "app.kubernetes.io/name",
+  "selector_required_kinds": ["Deployment", "StatefulSet", "DaemonSet"],
+  "selector_optional_kinds": ["Job", "CronJob"],
+  "claim_boundary": "Static controller-to-Pod identity binding only. Passing this gate does not prove Kubernetes API admission, controller reconciliation, scheduler placement, runtime health, deployment, production authorization, or independent validation."
+}
