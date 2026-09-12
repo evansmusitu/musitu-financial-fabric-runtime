@@ -1,0 +1,26 @@
+{
+  "schema_version": "mff.manifest-profile-policy.v1",
+  "authoritative_runtime_base_commit": "80c72d9f711561dd46337d7286ee7bfb2bb5e658",
+  "manifest_evidence_schema_version": "mff.runtime-manifest-evidence.v1",
+  "manifest_root": "deploy/musitu-financial-fabric/provider-neutral/manifests",
+  "allowed_manifest_extensions": [".json", ".yaml", ".yml"],
+  "descriptor_suffix": ".evidence.json",
+  "required_namespace": "musitu-financial-fabric-target-staging",
+  "benchmark_status_required_for_resolution": "measured",
+  "rendered_output_required": true,
+  "required_profile_refs": [
+    "provenance_ref",
+    "resource_profile",
+    "probe_profile",
+    "network_profile",
+    "workload_identity_profile",
+    "secret_profile",
+    "persistence_profile",
+    "backup_restore_profile",
+    "disruption_budget_profile",
+    "anti_affinity_profile",
+    "benchmark_evidence_ref"
+  ],
+  "target_validation_status_required_for_resolution": "passed",
+  "claim_boundary": "Format-neutral manifest evidence policy only. It byte-binds rendered JSON/YAML output and already-required profile references; it does not semantically parse YAML, prove Kubernetes admission, deploy a workload, establish target health, or authorize production."
+}
