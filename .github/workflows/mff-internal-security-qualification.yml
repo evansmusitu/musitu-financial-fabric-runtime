@@ -34,7 +34,7 @@ jobs:
           python -m pip check
 
       - name: Install pinned defensive scanners
-        run: python -m pip install 'pip-audit==2.10.1' 'bandit==1.9.4'
+        run: python -m pip install 'pip-audit==2.10.1' 'bandit==1.9.4' 'detect-secrets==1.5.0'
 
       - name: Audit pinned Python dependencies
         run: python -m pip_audit -r constraints-ci.txt --progress-spinner off
@@ -61,6 +61,32 @@ jobs:
           print(f"SBOM_SHA256={hashlib.sha256(raw).hexdigest()}")
           print(f"CONSTRAINTS_SHA256={hashlib.sha256(lock_raw).hexdigest()}")
           print("BOUNDARY: SBOM is internal dependency evidence, not independent supply-chain certification")
+          PY
+
+      - name: Scan repository content for likely committed secrets
+        run: |
+          cd ..
+          detect-secrets scan --all-files --exclude-files '(^|/)\.git/' > "$RUNNER_TEMP/mff-detect-secrets.json"
+          python - "$RUNNER_TEMP/mff-detect-secrets.json" <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+          import sys
+
+          report_path = Path(sys.argv[1])
+          raw = report_path.read_bytes()
+          report = json.loads(raw)
+          findings = []
+          for filename, rows in sorted((report.get("results") or {}).items()):
+              for row in rows or []:
+                  findings.append((filename, row.get("type"), row.get("line_number")))
+          if findings:
+              for filename, kind, line_number in findings:
+                  print("POTENTIAL_SECRET", filename, kind, line_number)
+              raise SystemExit(f"potential committed secrets require adjudication: {len(findings)}")
+          print("PASS: no likely committed secrets detected by detect-secrets 1.5.0")
+          print(f"SECRET_SCAN_SHA256={hashlib.sha256(raw).hexdigest()}")
+          print("BOUNDARY: this is MUSITU internal repository scanning, not external secret-management certification")
           PY
 
       - name: Validate structured internal threat model and evidence references
