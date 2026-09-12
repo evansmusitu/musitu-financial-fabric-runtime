@@ -1,0 +1,189 @@
+name: MFF Required Runtime Health Evidence Validator
+
+on:
+  push:
+    branches: [musitu-financial-fabric-production-readiness]
+    paths:
+      - '.github/mff-required-runtime-health-hardening.py'
+      - '.github/workflows/mff-required-runtime-health-validator.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  validate-and-publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12.14'
+
+      - uses: opentofu/setup-opentofu@9d84900f3238fab8cd84ce47d658d25dd008be2f # v1
+
+      - name: Apply exact hardening mutation
+        run: python .github/mff-required-runtime-health-hardening.py
+
+      - name: Verify exact mutation set
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t changed < <(git diff --name-only | sort)
+          expected=(
+            ".github/workflows/musitu-financial-fabric-production-iac.yml"
+            "control/musitu-financial-fabric/production-deployment-evidence-manifest.example.json"
+            "docs/production-readiness/ACTIVATION_RUNBOOK.md"
+            "docs/production-readiness/CONTROL_MATRIX.md"
+            "musitu_financial_fabric/app/production.py"
+            "musitu_financial_fabric/infra/production_guard.tf"
+            "musitu_financial_fabric/tests/test_production_controls.py"
+          )
+          mapfile -t expected_sorted < <(printf '%s\n' "${expected[@]}" | sort)
+          printf 'changed:\n'; printf '  %s\n' "${changed[@]}"
+          diff -u <(printf '%s\n' "${expected_sorted[@]}") <(printf '%s\n' "${changed[@]}")
+
+      - name: Run evidence-locked Python suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd musitu_financial_fabric
+          python --version
+          python -m pip install --upgrade pip==26.2.1
+          python -m pip install --constraint constraints-ci.txt -e .
+          python -m pip check
+          python -m compileall -q app tests
+          pytest -q
+
+      - name: Validate OpenTofu and prove missing runtime-health evidence closes gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd musitu_financial_fabric
+          tofu -chdir=infra init -backend=false
+          tofu -chdir=infra validate
+
+          auth_bundle="$RUNNER_TEMP/auth-bundle.bin"
+          printf '%s' 'TEST-ONLY-AUTH-BUNDLE' > "$auth_bundle"
+          auth_bundle_sha="$(sha256sum "$auth_bundle" | awk '{print $1}')"
+          auth="$RUNNER_TEMP/auth.json"
+          cat > "$auth" <<JSON
+          {
+            "funds_scope": "pilot",
+            "expires_at": "2099-01-01T00:00:00Z",
+            "evidence_bundle": {"path": "$auth_bundle", "sha256": "$auth_bundle_sha"},
+            "launch_scope": {"rails": ["ecocash"], "currencies": ["USD"], "max_single_payment_minor": 1000},
+            "evidence": {
+              "regulator": {"status": "approved", "evidence_ref": "TEST"},
+              "sponsor_bank": {"status": "approved", "evidence_ref": "TEST"},
+              "data_protection": {"status": "approved", "evidence_ref": "TEST"},
+              "independent_security": {"status": "approved", "evidence_ref": "TEST"},
+              "rail_provider": {"status": "approved", "evidence_ref": "TEST"}
+            }
+          }
+          JSON
+          auth_sha="$(sha256sum "$auth" | awk '{print $1}')"
+
+          target_bundle="$RUNNER_TEMP/target-bundle.bin"
+          printf '%s' 'TEST-ONLY-TARGET-BUNDLE' > "$target_bundle"
+          target_bundle_sha="$(sha256sum "$target_bundle" | awk '{print $1}')"
+          deployment="$RUNNER_TEMP/deployment.json"
+          cat > "$deployment" <<JSON
+          {
+            "target_environment_id": "test-only-production-target",
+            "verified_at": "2026-01-01T00:00:00Z",
+            "expires_at": "2099-01-01T00:00:00Z",
+            "evidence_bundle": {"path": "$target_bundle", "sha256": "$target_bundle_sha"},
+            "release": {
+              "commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "image_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "rollback_image_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "authorization_manifest_sha256": "$auth_sha"
+            },
+            "evidence": {
+              "dark_deployment": {"status": "passed", "evidence_ref": "TEST"},
+              "required_runtime_health": {"status": "passed", "evidence_ref": "TEST"},
+              "monitoring_alerting": {"status": "passed", "evidence_ref": "TEST"},
+              "postgres_backup_restore": {"status": "passed", "evidence_ref": "TEST"},
+              "tigerbeetle_recovery": {"status": "passed", "evidence_ref": "TEST"},
+              "provider_reconciliation": {"status": "passed", "evidence_ref": "TEST"},
+              "activation_rollback_drill": {"status": "passed", "evidence_ref": "TEST"}
+            },
+            "independent_kill_controls": {
+              "network": {"status": "verified", "independent_of_application": true, "evidence_ref": "TEST"},
+              "provider": {"status": "verified", "independent_of_application": true, "evidence_ref": "TEST"},
+              "settlement": {"status": "verified", "independent_of_application": true, "evidence_ref": "TEST"}
+            }
+          }
+          JSON
+          deployment_sha="$(sha256sum "$deployment" | awk '{print $1}')"
+
+          common=(
+            -var='environment=production'
+            -var='production_mode=pilot'
+            -var='live_funds_enabled=true'
+            -var="authorization_manifest_path=$auth"
+            -var="authorization_manifest_sha256=$auth_sha"
+            -var="deployment_evidence_manifest_path=$deployment"
+            -var="deployment_evidence_manifest_sha256=$deployment_sha"
+            -var='target_environment_id=test-only-production-target'
+            -var='release_commit=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+            -var='release_image_digest=sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+            -var='production_enabled_rails=["ecocash"]'
+            -var='production_enabled_currencies=["USD"]'
+            -var='max_single_payment_minor=1000'
+          )
+          tofu -chdir=infra plan -input=false -lock=false -refresh=false "${common[@]}" -out="$RUNNER_TEMP/valid.tfplan"
+
+          missing="$RUNNER_TEMP/deployment-missing-runtime-health.json"
+          python - "$deployment" "$missing" <<'PY'
+          import json, sys
+          source, target = sys.argv[1], sys.argv[2]
+          data = json.load(open(source))
+          del data["evidence"]["required_runtime_health"]
+          json.dump(data, open(target, "w"), sort_keys=True)
+          PY
+          missing_sha="$(sha256sum "$missing" | awk '{print $1}')"
+          bad=("${common[@]}")
+          bad[5]="-var=deployment_evidence_manifest_path=$missing"
+          bad[6]="-var=deployment_evidence_manifest_sha256=$missing_sha"
+          if tofu -chdir=infra plan -input=false -lock=false -refresh=false "${bad[@]}" > "$RUNNER_TEMP/missing.log" 2>&1; then
+            echo "FAIL: missing required runtime health evidence was accepted"
+            exit 1
+          fi
+          grep -q 'executed target-environment drills' "$RUNNER_TEMP/missing.log"
+          echo "PASS: required runtime health evidence is fail-closed in OpenTofu"
+
+      - name: Stage tested workflow bytes and publish runtime half
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .mff-runtime-health
+          cp .github/workflows/musitu-financial-fabric-production-iac.yml .mff-runtime-health/production-iac.yml
+          git checkout -- .github/workflows/musitu-financial-fabric-production-iac.yml
+
+          mapfile -t changed < <(git diff --name-only | sort)
+          expected=(
+            ".mff-runtime-health/production-iac.yml"
+            "control/musitu-financial-fabric/production-deployment-evidence-manifest.example.json"
+            "docs/production-readiness/ACTIVATION_RUNBOOK.md"
+            "docs/production-readiness/CONTROL_MATRIX.md"
+            "musitu_financial_fabric/app/production.py"
+            "musitu_financial_fabric/infra/production_guard.tf"
+            "musitu_financial_fabric/tests/test_production_controls.py"
+          )
+          mapfile -t expected_sorted < <(printf '%s\n' "${expected[@]}" | sort)
+          diff -u <(printf '%s\n' "${expected_sorted[@]}") <(printf '%s\n' "${changed[@]}")
+
+          git fetch origin musitu-financial-fabric-production-readiness
+          test "$(git rev-parse HEAD)" = "$(git rev-parse origin/musitu-financial-fabric-production-readiness)"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "${expected[@]}"
+          git commit -m "Require full target runtime health evidence"
+          git push origin HEAD:musitu-financial-fabric-production-readiness
