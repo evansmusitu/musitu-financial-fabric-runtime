@@ -1,0 +1,28 @@
+{
+  "schema_version": "mff.recovery-profile-policy.v1",
+  "claim_boundary": "Static recovery-design integrity only. This policy does not classify any additional runtime as stateful, execute a restore/recovery drill, or create target deployment evidence.",
+  "authoritative_runtime_base_commit": "80c72d9f711561dd46337d7286ee7bfb2bb5e658",
+  "profile_schema_version": "mff.runtime-recovery-profile.v1",
+  "scoped_obligations": {
+    "postgres": {
+      "profile_mode": "backup_restore",
+      "target_evidence_key": "postgres_backup_restore"
+    },
+    "tigerbeetle": {
+      "profile_mode": "recovery",
+      "target_evidence_key": "tigerbeetle_recovery"
+    }
+  },
+  "unclassified_runtime_policy": "No persistence or recovery classification is inferred for the other 24 required runtimes from product names or layers alone.",
+  "required_design_fields": [
+    "rpo_target",
+    "rto_target",
+    "backup_or_recovery_method",
+    "encryption_at_rest",
+    "retention_or_replication_policy",
+    "restore_or_restart_procedure_ref",
+    "integrity_verification_method",
+    "failure_scenarios"
+  ],
+  "target_execution_rule": "A profile remains design_only_unexecuted and must require separate target execution evidence under the authoritative production deployment evidence manifest."
+}
