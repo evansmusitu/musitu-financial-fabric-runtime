@@ -6,6 +6,7 @@ on:
     paths:
       - 'deploy/musitu-financial-fabric/provider-neutral/**'
       - 'musitu_financial_fabric/scripts/validate_provider_neutral_target.py'
+      - 'musitu_financial_fabric/scripts/validate_provider_neutral_deployability.py'
       - 'musitu_financial_fabric/scripts/validate_benchmark_evidence.py'
       - 'musitu_financial_fabric/scripts/validate_recovery_profiles.py'
       - 'musitu_financial_fabric/scripts/validate_identity_secret_profiles.py'
@@ -80,22 +81,30 @@ jobs:
       - name: Validate resolved runtime manifests
         run: python musitu_financial_fabric/scripts/validate_manifest_profiles.py --contract
 
-      - name: Prove target is intentionally not deployable yet
+      - name: Exercise canonical deployability composition gate
+        run: python musitu_financial_fabric/scripts/validate_provider_neutral_deployability.py --self-test
+
+      - name: Prove canonical target gate is intentionally not deployable yet
         shell: bash
         run: |
           set +e
-          python musitu_financial_fabric/scripts/validate_provider_neutral_target.py --deployable
+          output="$(python musitu_financial_fabric/scripts/validate_provider_neutral_deployability.py --contract 2>&1)"
           rc=$?
           set -e
+          printf '%s\n' "$output"
           if [ "$rc" -eq 0 ]; then
-            echo 'ERROR: staging contract unexpectedly declared itself deployable.' >&2
+            echo 'ERROR: canonical staging gate unexpectedly declared itself deployable.' >&2
             exit 1
           fi
           if [ "$rc" -ne 3 ]; then
-            echo "ERROR: expected fail-closed deployability exit 3, got $rc" >&2
+            echo "ERROR: expected fail-closed canonical deployability exit 3, got $rc" >&2
             exit 1
           fi
-          echo 'PASS: staging foundation remains intentionally non-deployable.'
+          if ! grep -q '^NOT DEPLOYABLE: 365 unresolved fail-closed conditions$' <<<"$output"; then
+            echo 'ERROR: canonical deployability blocker count drifted from the qualified 365-condition frontier.' >&2
+            exit 1
+          fi
+          echo 'PASS: canonical semantic + structural gate remains intentionally non-deployable at exactly 365 blockers.'
 
       - name: Record claim boundary
         if: always()
