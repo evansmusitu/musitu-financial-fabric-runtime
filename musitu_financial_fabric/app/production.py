@@ -260,6 +260,31 @@ def _deployment_evidence_checks(cfg: Settings) -> list[ProductionCheck]:
         "byte-pinned target deployment evidence manifest verified",
     )]
 
+    evidence_bundle = manifest.get("evidence_bundle")
+    bundle_ok = False
+    bundle_message = "target evidence bundle path and SHA-256 are missing or malformed"
+    if isinstance(evidence_bundle, dict):
+        bundle_path_raw = evidence_bundle.get("path")
+        bundle_sha256 = str(evidence_bundle.get("sha256", "")).strip().lower()
+        if isinstance(bundle_path_raw, str) and bundle_path_raw.strip() and _SHA256_RE.fullmatch(bundle_sha256):
+            try:
+                bundle_raw = Path(bundle_path_raw.strip()).read_bytes()
+                actual_bundle_sha256 = hashlib.sha256(bundle_raw).hexdigest()
+                bundle_ok = actual_bundle_sha256 == bundle_sha256
+                bundle_message = (
+                    "byte-pinned target evidence bundle verified"
+                    if bundle_ok
+                    else "target evidence bundle SHA-256 mismatch"
+                )
+            except OSError as exc:
+                bundle_message = f"target evidence bundle unavailable: {type(exc).__name__}"
+    checks.append(ProductionCheck(
+        "deployment_evidence_bundle",
+        bundle_ok,
+        "deployment",
+        bundle_message,
+    ))
+
     target_environment_id = manifest.get("target_environment_id")
     target_ok = isinstance(target_environment_id, str) and bool(target_environment_id.strip())
     checks.append(ProductionCheck(
