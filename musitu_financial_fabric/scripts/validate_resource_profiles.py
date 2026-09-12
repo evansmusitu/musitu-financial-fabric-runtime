@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import re
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +17,29 @@ SELF_TEST_EVIDENCE = TARGET / ".validation" / "resource-profile-self-test-eviden
 EXPECTED_BASE_COMMIT = "80c72d9f711561dd46337d7286ee7bfb2bb5e658"
 OCI_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
+QUANTITY_RE = re.compile(
+    r"^(?P<number>[+-]?(?:\d+(?:\.\d*)?|\.\d+))"
+    r"(?P<suffix>Ki|Mi|Gi|Ti|Pi|Ei|m|k|M|G|T|P|E|[eE][+-]?\d+)?$"
+)
+MAX_QUANTITY_MAGNITUDE = Decimal(2**63 - 1)
+DECIMAL_FACTORS = {
+    "": Decimal(1),
+    "m": Decimal("0.001"),
+    "k": Decimal(10) ** 3,
+    "M": Decimal(10) ** 6,
+    "G": Decimal(10) ** 9,
+    "T": Decimal(10) ** 12,
+    "P": Decimal(10) ** 15,
+    "E": Decimal(10) ** 18,
+}
+BINARY_FACTORS = {
+    "Ki": Decimal(2) ** 10,
+    "Mi": Decimal(2) ** 20,
+    "Gi": Decimal(2) ** 30,
+    "Ti": Decimal(2) ** 40,
+    "Pi": Decimal(2) ** 50,
+    "Ei": Decimal(2) ** 60,
+}
 
 
 def _load(path: Path) -> Any:
@@ -66,11 +90,27 @@ def _evidence_errors(payload: object, *, label: str) -> list[str]:
     return errors
 
 
+def _quantity_policy_errors(policy: dict[str, Any]) -> list[str]:
+    expected = {
+        "grammar": "kubernetes_quantity",
+        "positive_for_resolution": True,
+        "reject_server_side_rounding": True,
+        "cpu_minimum_unit": "1m",
+        "memory_base_unit": "byte",
+        "requests_must_not_exceed_limits": True,
+        "maximum_magnitude": str(2**63 - 1),
+    }
+    actual = policy.get("compute_quantity_policy")
+    if actual != expected:
+        return ["resource profile compute_quantity_policy is invalid"]
+    return []
+
+
 def _policy_errors(policy: object) -> list[str]:
     errors: list[str] = []
     if not isinstance(policy, dict):
         return ["resource profile policy root must be an object"]
-    if policy.get("schema_version") != "mff.resource-profile-policy.v1":
+    if policy.get("schema_version") != "mff.resource-profile-policy.v2":
         errors.append("resource profile policy schema_version is invalid")
     if policy.get("authoritative_runtime_base_commit") != EXPECTED_BASE_COMMIT:
         errors.append("resource profile policy is not anchored to the sealed runtime release")
@@ -88,6 +128,8 @@ def _policy_errors(policy: object) -> list[str]:
         values = policy.get(field)
         if not isinstance(values, list) or not values or any(not isinstance(item, str) or not item for item in values):
             errors.append(f"resource profile policy {field} is invalid")
+    if isinstance(policy, dict):
+        errors.extend(_quantity_policy_errors(policy))
     return errors
 
 
@@ -100,6 +142,68 @@ def _benchmark_plan_errors(policy: dict[str, Any]) -> list[str]:
         errors.append("resource benchmark plan does not require measured status")
     if plan.get("benchmark_evidence_schema_version") != policy.get("benchmark_evidence_schema_version"):
         errors.append("resource benchmark evidence schema does not match resource profile policy")
+    return errors
+
+
+def _quantity_value(value: object, *, resource: str) -> tuple[Decimal | None, str | None]:
+    if not isinstance(value, str) or not value.strip():
+        return None, f"{resource} quantity is missing"
+    text = value.strip()
+    match = QUANTITY_RE.fullmatch(text)
+    if match is None:
+        return None, f"{resource} quantity is not a supported Kubernetes Quantity"
+    try:
+        number = Decimal(match.group("number"))
+    except InvalidOperation:
+        return None, f"{resource} quantity number is invalid"
+
+    suffix = match.group("suffix") or ""
+    if suffix in DECIMAL_FACTORS:
+        factor = DECIMAL_FACTORS[suffix]
+    elif suffix in BINARY_FACTORS:
+        factor = BINARY_FACTORS[suffix]
+    else:
+        factor = Decimal(10) ** int(suffix[1:])
+
+    base_value = number * factor
+    if base_value <= 0:
+        return None, f"{resource} quantity must be greater than zero for a resolved resource profile"
+    if abs(base_value) > MAX_QUANTITY_MAGNITUDE:
+        return None, f"{resource} quantity exceeds Kubernetes Quantity magnitude bound"
+
+    if resource == "cpu":
+        milli_cpu = base_value * Decimal(1000)
+        if milli_cpu != milli_cpu.to_integral_value():
+            return None, "cpu quantity has precision finer than 1m"
+    elif resource == "memory":
+        if base_value != base_value.to_integral_value():
+            return None, "memory quantity must resolve to a whole number of bytes"
+    else:
+        return None, f"unsupported compute resource {resource}"
+    return base_value, None
+
+
+def _compute_errors(payload: dict[str, Any], policy: dict[str, Any]) -> list[str]:
+    errors: list[str] = []
+    parsed: dict[tuple[str, str], Decimal] = {}
+    for block_name in ("requests", "limits"):
+        block = payload.get(block_name)
+        if not isinstance(block, dict):
+            errors.append(f"resource profile {block_name} must be an object")
+            continue
+        for field in policy.get("required_compute_fields", []):
+            value, error = _quantity_value(block.get(field), resource=field)
+            if error is not None:
+                errors.append(f"resource profile {block_name}.{field}: {error}")
+            elif value is not None:
+                parsed[(block_name, field)] = value
+
+    if policy.get("compute_quantity_policy", {}).get("requests_must_not_exceed_limits") is True:
+        for field in policy.get("required_compute_fields", []):
+            request = parsed.get(("requests", field))
+            limit = parsed.get(("limits", field))
+            if request is not None and limit is not None and request > limit:
+                errors.append(f"resource profile requests.{field} must not exceed limits.{field}")
     return errors
 
 
@@ -171,15 +275,7 @@ def _profile_errors(
     if not isinstance(environment, str) or not environment.strip():
         errors.append("resource profile environment_id is missing")
 
-    for block_name in ("requests", "limits"):
-        block = payload.get(block_name)
-        if not isinstance(block, dict):
-            errors.append(f"resource profile {block_name} must be an object")
-            continue
-        for field in policy.get("required_compute_fields", []):
-            value = block.get(field)
-            if not isinstance(value, str) or not value.strip():
-                errors.append(f"resource profile {block_name}.{field} is missing")
+    errors.extend(_compute_errors(payload, policy))
 
     basis = payload.get("sizing_basis")
     if not isinstance(basis, dict):
@@ -233,8 +329,8 @@ def _self_test() -> list[str]:
         "image_digest": digest,
         "environment_id": "self-test-target",
         "benchmark_evidence_ref": benchmark_ref,
-        "requests": {"cpu": "synthetic", "memory": "synthetic"},
-        "limits": {"cpu": "synthetic", "memory": "synthetic"},
+        "requests": {"cpu": "0.5", "memory": "256Mi"},
+        "limits": {"cpu": "1", "memory": "1Gi"},
         "sizing_basis": {
             "selected_from_measurements": True,
             "headroom": {"source": "synthetic-self-test"},
@@ -277,10 +373,29 @@ def _self_test() -> list[str]:
     if not _profile_errors("self-test", row, candidate, policy, benchmark):
         failures.append("resource profile self-test failed to reject missing failure/recovery consideration")
 
+    quantity_mutations = [
+        ("malformed cpu quantity", "requests", "cpu", "synthetic"),
+        ("sub-millicpu precision", "requests", "cpu", "0.0005"),
+        ("fractional millicpu", "requests", "cpu", "0.5m"),
+        ("fractional-byte memory", "requests", "memory", "400m"),
+        ("malformed memory suffix", "requests", "memory", "256MB"),
+        ("zero cpu quantity", "requests", "cpu", "0"),
+    ]
+    for label, block, field, value in quantity_mutations:
+        candidate = json.loads(json.dumps(profile))
+        candidate[block][field] = value
+        if not _profile_errors("self-test", row, candidate, policy, benchmark):
+            failures.append(f"resource profile self-test failed to reject {label}")
+
     candidate = json.loads(json.dumps(profile))
-    candidate["requests"]["cpu"] = ""
+    candidate["requests"]["cpu"] = "2"
     if not _profile_errors("self-test", row, candidate, policy, benchmark):
-        failures.append("resource profile self-test failed to reject empty compute request")
+        failures.append("resource profile self-test failed to reject cpu request above limit")
+
+    candidate = json.loads(json.dumps(profile))
+    candidate["requests"]["memory"] = "2Gi"
+    if not _profile_errors("self-test", row, candidate, policy, benchmark):
+        failures.append("resource profile self-test failed to reject memory request above limit")
 
     candidate = json.loads(json.dumps(profile))
     candidate["target_validation"]["evidence_sha256"] = "0" * 64
@@ -342,7 +457,11 @@ def main() -> int:
             for failure in failures:
                 print(f"SELF-TEST FAILURE: {failure}")
             return 4
-        print("PASS: resource profile validator rejects unmeasured sizing, benchmark drift, incomplete compute assignments, and unbound target evidence")
+        print(
+            "PASS: resource profile validator rejects unmeasured sizing, benchmark drift, "
+            "invalid Kubernetes CPU/memory quantities, request-over-limit assignments, "
+            "incomplete compute assignments, and unbound target evidence"
+        )
         return 0
     errors, resolved, unresolved = _contract_errors()
     if errors:
@@ -350,7 +469,10 @@ def main() -> int:
             print(f"RESOURCE PROFILE BLOCKER: {error}")
         return 2
     print(f"PASS: resource_profile: validated {resolved} resolved profiles; {unresolved} remain unresolved")
-    print("BOUNDARY: no CPU/memory assignment, production sizing, benchmark result, or target execution is inferred from unresolved profiles")
+    print(
+        "BOUNDARY: no CPU/memory assignment, production sizing, benchmark result, "
+        "or target execution is inferred from unresolved profiles"
+    )
     return 0
 
 

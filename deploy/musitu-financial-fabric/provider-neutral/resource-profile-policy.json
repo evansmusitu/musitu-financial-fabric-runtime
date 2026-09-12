@@ -1,10 +1,10 @@
 {
-  "schema_version": "mff.resource-profile-policy.v1",
+  "schema_version": "mff.resource-profile-policy.v2",
   "authoritative_runtime_base_commit": "80c72d9f711561dd46337d7286ee7bfb2bb5e658",
   "benchmark_plan_schema_version": "mff.resource-benchmark-plan.v1",
   "benchmark_evidence_schema_version": "mff.runtime-benchmark-evidence.v1",
   "profile_schema_version": "mff.resource-profile.v1",
-  "claim_boundary": "Static evidence policy only. It does not select CPU/memory values, prove a benchmark, establish production sizing, deploy a workload, or authorize production.",
+  "claim_boundary": "Static evidence policy only. It constrains Kubernetes CPU/memory quantity semantics but does not select CPU/memory values, prove a benchmark, establish production sizing, deploy a workload, or authorize production.",
   "benchmark_status_required_for_resolution": "measured",
   "required_fields": [
     "runtime_key",
@@ -27,5 +27,14 @@
     "failure_recovery_considered",
     "rationale"
   ],
+  "compute_quantity_policy": {
+    "grammar": "kubernetes_quantity",
+    "positive_for_resolution": true,
+    "reject_server_side_rounding": true,
+    "cpu_minimum_unit": "1m",
+    "memory_base_unit": "byte",
+    "requests_must_not_exceed_limits": true,
+    "maximum_magnitude": "9223372036854775807"
+  },
   "target_validation_status_required_for_resolution": "passed"
 }
