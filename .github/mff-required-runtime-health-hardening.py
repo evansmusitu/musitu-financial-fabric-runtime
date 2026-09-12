@@ -4,6 +4,10 @@ import subprocess
 from pathlib import Path
 
 BASE_COMMIT = "52c9e02a92805cb03097112806d3b8095a8df2d0"
+TEMP_VALIDATOR_FILES = {
+    ".github/mff-required-runtime-health-hardening.py",
+    ".github/workflows/mff-required-runtime-health-validator.yml",
+}
 
 def replace_once(path: str, old: str, new: str) -> None:
     p = Path(path)
@@ -13,9 +17,25 @@ def replace_once(path: str, old: str, new: str) -> None:
         raise SystemExit(f"FAIL: {path} anchor count={count}, expected exactly 1")
     p.write_text(text.replace(old, new, 1), encoding="utf-8")
 
-parent = subprocess.check_output(["git", "rev-parse", "HEAD^"], text=True).strip()
-if parent != BASE_COMMIT:
-    raise SystemExit(f"FAIL: validator parent {parent} != expected {BASE_COMMIT}")
+ancestor = subprocess.run(
+    ["git", "merge-base", "--is-ancestor", BASE_COMMIT, "HEAD"],
+    check=False,
+)
+if ancestor.returncode != 0:
+    raise SystemExit(f"FAIL: base authority {BASE_COMMIT} is not an ancestor of validator HEAD")
+changed_since_base = {
+    line.strip()
+    for line in subprocess.check_output(
+        ["git", "diff", "--name-only", f"{BASE_COMMIT}..HEAD"],
+        text=True,
+    ).splitlines()
+    if line.strip()
+}
+if not changed_since_base or not changed_since_base.issubset(TEMP_VALIDATOR_FILES):
+    raise SystemExit(
+        "FAIL: validator commits since base contain non-temporary changes: "
+        + ", ".join(sorted(changed_since_base))
+    )
 
 replace_once(
     "musitu_financial_fabric/app/production.py",
