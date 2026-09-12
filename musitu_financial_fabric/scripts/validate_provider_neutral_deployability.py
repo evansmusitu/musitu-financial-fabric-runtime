@@ -19,6 +19,7 @@ EXPECTED_SEMANTIC_GATES = (
     ("identity_secret_profiles", "validate_identity_secret_profiles.py"),
     ("identity_secret_target_evidence", "validate_identity_secret_target_evidence.py"),
     ("operational_profiles", "validate_operational_profiles.py"),
+    ("operational_target_evidence", "validate_operational_target_evidence.py"),
     ("supply_persistence_profiles", "validate_supply_persistence_profiles.py"),
     ("persistence_target_evidence", "validate_persistence_target_evidence.py"),
     ("resource_profiles", "validate_resource_profiles.py"),
@@ -44,14 +45,12 @@ def _policy_errors() -> list[str]:
         errors.append("deployability composition policy schema_version is invalid")
     if policy.get("authoritative_runtime_base_commit") != EXPECTED_BASE_COMMIT:
         errors.append("deployability composition policy is not anchored to the sealed runtime release")
-
     expected_semantic = [
         {"name": name, "script": f"musitu_financial_fabric/scripts/{script}", "args": ["--contract"]}
         for name, script in EXPECTED_SEMANTIC_GATES
     ]
     if policy.get("semantic_contract_gates") != expected_semantic:
         errors.append("semantic contract gate inventory does not exactly match validator policy")
-
     expected_structural = {
         "script": f"musitu_financial_fabric/scripts/{STRUCTURAL_GATE}",
         "args": ["--deployable"],
@@ -59,7 +58,6 @@ def _policy_errors() -> list[str]:
     }
     if policy.get("structural_deployability_gate") != expected_structural:
         errors.append("structural deployability gate does not exactly match validator policy")
-
     for _, script in EXPECTED_SEMANTIC_GATES:
         if not (SCRIPTS / script).is_file():
             errors.append(f"semantic gate script is missing: {script}")
@@ -68,21 +66,9 @@ def _policy_errors() -> list[str]:
     return errors
 
 
-def _execute(
-    script: Path,
-    args: list[str],
-    *,
-    runner: RunCallable | None = None,
-) -> Any:
+def _execute(script: Path, args: list[str], *, runner: RunCallable | None = None) -> Any:
     execute = subprocess.run if runner is None else runner
-    return execute(
-        [sys.executable, str(script), *args],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-        timeout=120,
-        check=False,
-    )
+    return execute([sys.executable, str(script), *args], cwd=ROOT, capture_output=True, text=True, timeout=120, check=False)
 
 
 def _first_output(result: Any) -> str:
@@ -104,10 +90,7 @@ def _semantic_gate_errors(*, runner: RunCallable | None = None) -> list[str]:
             errors.append(f"{name}: could not execute semantic gate ({type(exc).__name__})")
             continue
         if int(getattr(result, "returncode", 1)) != 0:
-            errors.append(
-                f"{name}: semantic gate failed with exit {getattr(result, 'returncode', 'unknown')}: "
-                f"{_first_output(result)}"
-            )
+            errors.append(f"{name}: semantic gate failed with exit {getattr(result, 'returncode', 'unknown')}: {_first_output(result)}")
     return errors
 
 
@@ -115,15 +98,12 @@ def _self_test() -> list[str]:
     failures = _policy_errors()
     if failures:
         return failures
-
     class SyntheticResult:
         returncode = 9
         stdout = "synthetic semantic failure"
         stderr = ""
-
     def failing_runner(*args: Any, **kwargs: Any) -> SyntheticResult:
         return SyntheticResult()
-
     synthetic = _semantic_gate_errors(runner=failing_runner)
     if len(synthetic) != len(EXPECTED_SEMANTIC_GATES):
         failures.append("composition self-test did not fail closed for every synthetic semantic gate failure")
@@ -138,25 +118,21 @@ def _contract() -> int:
         for error in policy_errors:
             print(f"COMPOSITION BLOCKER: {error}")
         return 7
-
     semantic_errors = _semantic_gate_errors()
     if semantic_errors:
         for error in semantic_errors:
             print(f"COMPOSITION BLOCKER: {error}")
         return 7
-
     print("PASS: all semantic contract gates passed before structural deployability evaluation")
     try:
         structural = _execute(SCRIPTS / STRUCTURAL_GATE, ["--deployable"])
     except (OSError, subprocess.SubprocessError) as exc:
         print(f"COMPOSITION BLOCKER: structural deployability gate could not execute ({type(exc).__name__})")
         return 7
-
     if getattr(structural, "stdout", ""):
         print(structural.stdout, end="" if structural.stdout.endswith("\n") else "\n")
     if getattr(structural, "stderr", ""):
         print(structural.stderr, end="" if structural.stderr.endswith("\n") else "\n", file=sys.stderr)
-
     rc = int(getattr(structural, "returncode", 1))
     if rc in (0, 3):
         return rc
@@ -165,14 +141,11 @@ def _contract() -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(
-        description="Canonical fail-closed provider-neutral deployability composition gate."
-    )
+    parser = argparse.ArgumentParser(description="Canonical fail-closed provider-neutral deployability composition gate.")
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--self-test", action="store_true")
     mode.add_argument("--contract", action="store_true")
     args = parser.parse_args()
-
     if args.self_test:
         failures = _self_test()
         if failures:

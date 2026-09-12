@@ -12,6 +12,7 @@ on:
       - 'musitu_financial_fabric/scripts/validate_identity_secret_profiles.py'
       - 'musitu_financial_fabric/scripts/validate_identity_secret_target_evidence.py'
       - 'musitu_financial_fabric/scripts/validate_operational_profiles.py'
+      - 'musitu_financial_fabric/scripts/validate_operational_target_evidence.py'
       - 'musitu_financial_fabric/scripts/validate_supply_persistence_profiles.py'
       - 'musitu_financial_fabric/scripts/validate_persistence_target_evidence.py'
       - 'musitu_financial_fabric/scripts/validate_resource_profiles.py'
@@ -30,74 +31,55 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: '3.12.14'
-
       - name: Validate exact 26-runtime structural contract and fail-closed foundation
         run: python musitu_financial_fabric/scripts/validate_provider_neutral_target.py --structure
-
       - name: Exercise benchmark evidence validator
         run: python musitu_financial_fabric/scripts/validate_provider_neutral_target.py --self-test
-
       - name: Exercise raw benchmark evidence byte-binding gate
         run: python musitu_financial_fabric/scripts/validate_benchmark_evidence.py --self-test
-
       - name: Validate all currently measured benchmark evidence rows
         run: python musitu_financial_fabric/scripts/validate_benchmark_evidence.py --contract
-
       - name: Exercise authoritative recovery-profile integrity gate
         run: python musitu_financial_fabric/scripts/validate_recovery_profiles.py --self-test
-
       - name: Validate authoritative recovery-profile scope
         run: python musitu_financial_fabric/scripts/validate_recovery_profiles.py --contract
-
       - name: Exercise workload identity and secret-profile integrity gate
         run: python musitu_financial_fabric/scripts/validate_identity_secret_profiles.py --self-test
-
       - name: Validate resolved workload identity and secret profiles
         run: python musitu_financial_fabric/scripts/validate_identity_secret_profiles.py --contract
-
       - name: Exercise workload identity and secret target-evidence association gate
         run: python musitu_financial_fabric/scripts/validate_identity_secret_target_evidence.py --self-test
-
       - name: Validate resolved workload identity and secret target-evidence descriptors
         run: python musitu_financial_fabric/scripts/validate_identity_secret_target_evidence.py --contract
-
       - name: Exercise probe, network, disruption, and topology profile integrity gate
         run: python musitu_financial_fabric/scripts/validate_operational_profiles.py --self-test
-
       - name: Validate resolved operational profiles
         run: python musitu_financial_fabric/scripts/validate_operational_profiles.py --contract
-
+      - name: Exercise operational target-evidence association gate
+        run: python musitu_financial_fabric/scripts/validate_operational_target_evidence.py --self-test
+      - name: Validate resolved operational target-evidence descriptors
+        run: python musitu_financial_fabric/scripts/validate_operational_target_evidence.py --contract
       - name: Exercise image provenance and persistence-profile integrity gate
         run: python musitu_financial_fabric/scripts/validate_supply_persistence_profiles.py --self-test
-
       - name: Validate resolved image provenance and persistence profiles
         run: python musitu_financial_fabric/scripts/validate_supply_persistence_profiles.py --contract
-
       - name: Exercise persistence target-evidence association gate
         run: python musitu_financial_fabric/scripts/validate_persistence_target_evidence.py --self-test
-
       - name: Validate resolved persistence target-evidence descriptors
         run: python musitu_financial_fabric/scripts/validate_persistence_target_evidence.py --contract
-
       - name: Exercise measured resource-profile integrity gate
         run: python musitu_financial_fabric/scripts/validate_resource_profiles.py --self-test
-
       - name: Validate resolved measured resource profiles
         run: python musitu_financial_fabric/scripts/validate_resource_profiles.py --contract
-
       - name: Exercise rendered manifest evidence integrity gate
         run: python musitu_financial_fabric/scripts/validate_manifest_profiles.py --self-test
-
       - name: Validate resolved runtime manifests
         run: python musitu_financial_fabric/scripts/validate_manifest_profiles.py --contract
-
       - name: Exercise canonical deployability composition gate
         run: python musitu_financial_fabric/scripts/validate_provider_neutral_deployability.py --self-test
-
       - name: Prove canonical target gate is intentionally not deployable yet
         shell: bash
         run: |
@@ -119,7 +101,6 @@ jobs:
             exit 1
           fi
           echo 'PASS: canonical semantic + structural gate remains intentionally non-deployable at exactly 365 blockers.'
-
       - name: Record claim boundary
         if: always()
         run: |

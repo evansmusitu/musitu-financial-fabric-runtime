@@ -9,6 +9,7 @@
     {"name":"identity_secret_profiles","script":"musitu_financial_fabric/scripts/validate_identity_secret_profiles.py","args":["--contract"]},
     {"name":"identity_secret_target_evidence","script":"musitu_financial_fabric/scripts/validate_identity_secret_target_evidence.py","args":["--contract"]},
     {"name":"operational_profiles","script":"musitu_financial_fabric/scripts/validate_operational_profiles.py","args":["--contract"]},
+    {"name":"operational_target_evidence","script":"musitu_financial_fabric/scripts/validate_operational_target_evidence.py","args":["--contract"]},
     {"name":"supply_persistence_profiles","script":"musitu_financial_fabric/scripts/validate_supply_persistence_profiles.py","args":["--contract"]},
     {"name":"persistence_target_evidence","script":"musitu_financial_fabric/scripts/validate_persistence_target_evidence.py","args":["--contract"]},
     {"name":"resource_profiles","script":"musitu_financial_fabric/scripts/validate_resource_profiles.py","args":["--contract"]},
