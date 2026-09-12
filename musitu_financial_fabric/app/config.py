@@ -13,6 +13,7 @@ _PROVEN_RUNTIME_DEPENDENCIES = {
     "anyio": "4.15.1",
     "certifi": "2026.7.22",
     "click": "8.5.0",
+    "defusedxml": "0.7.1",
     "fastapi": "0.141.1",
     "h11": "0.16.0",
     "httpcore": "1.0.9",

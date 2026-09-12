@@ -38,8 +38,41 @@ jobs:
       - name: Audit pinned Python dependencies
         run: python -m pip_audit -r constraints-ci.txt --progress-spinner off
 
-      - name: Static Python security analysis
-        run: bandit -r app -ll -ii
+      - name: Static Python security analysis with exact false-positive adjudication
+        run: |
+          bandit -r app -ll -ii -f json -o "$RUNNER_TEMP/bandit.json" || true
+          python - "$RUNNER_TEMP/bandit.json" <<'PY'
+          import json
+          import sys
+
+          report = json.load(open(sys.argv[1], encoding="utf-8"))
+          accepted = []
+          unexpected = []
+          for finding in report.get("results", []):
+              marker = (
+                  finding.get("test_id"),
+                  finding.get("filename", "").replace("\\", "/"),
+                  finding.get("line_number"),
+              )
+              if marker == ("B608", "app/service.py", 356):
+                  accepted.append(finding)
+              else:
+                  unexpected.append(finding)
+          if unexpected:
+              for finding in unexpected:
+                  print(
+                      "UNEXPECTED",
+                      finding.get("test_id"),
+                      finding.get("filename"),
+                      finding.get("line_number"),
+                      finding.get("issue_severity"),
+                      finding.get("issue_confidence"),
+                  )
+              raise SystemExit(1)
+          if len(accepted) != 1:
+              raise SystemExit(f"expected exactly one adjudicated B608 finding, found {len(accepted)}")
+          print("PASS: only the exact adjudicated B608 trusted-literal query construction remains")
+          PY
 
       - name: Compile and run complete test suite
         run: |

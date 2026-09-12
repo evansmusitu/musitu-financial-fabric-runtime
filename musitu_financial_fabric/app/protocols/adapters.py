@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import base64
 import json
-import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
+
+from defusedxml import ElementTree as ET
 
 
 @dataclass(frozen=True)
@@ -104,7 +105,7 @@ def gsma_transaction(payload: dict) -> NormalizedIntent:
 
 
 def iso20022_pacs008(xml_body: str) -> NormalizedIntent:
-    root = ET.fromstring(xml_body)
+    root = ET.fromstring(xml_body, forbid_dtd=True, forbid_entities=True, forbid_external=True)
     amount_node = None
     for node in root.iter():
         local = node.tag.split("}")[-1]

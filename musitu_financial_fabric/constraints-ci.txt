@@ -1,8 +1,9 @@
-# MUSITU Financial Fabric evidence lock.
+# MUSITU Financial Fabric internal-qualification dependency lock.
 #
-# Exact versions below are the Python runtime/test dependency set that passed
-# the same-head production-readiness evidence on 2026-09-11:
-#   runtime head: c4704f85862a40a951506d0442121fe2c28fbb44
+# The sealed runtime/test dependency set is preserved, with defusedxml==0.7.1
+# added on this isolated branch to harden ISO 20022 XML parsing. This branch is
+# internal qualification evidence only until its complete qualification passes.
+#   sealed runtime head: 80c72d9f711561dd46337d7286ee7bfb2bb5e658
 #   CPython: 3.12.14 (production) and 3.13.15 (core)
 #
 # This is a version constraint, not a cryptographic package hash lock.
@@ -13,6 +14,7 @@ annotated-types==0.8.0
 anyio==4.15.1
 certifi==2026.7.22
 click==8.5.0
+defusedxml==0.7.1
 fastapi==0.141.1
 h11==0.16.0
 httpcore==1.0.9

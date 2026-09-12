@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from defusedxml.common import DTDForbidden
 
 from app.protocols.adapters import (
     gsma_transaction,
@@ -44,6 +45,15 @@ def test_iso20022_requires_explicit_currency_and_exact_cent_precision():
 
     with pytest.raises(ValueError, match="precision smaller"):
         iso20022_pacs008('<Document><IntrBkSttlmAmt Ccy="USD">12.345</IntrBkSttlmAmt></Document>')
+
+
+def test_iso20022_rejects_dtd_before_parsing_payment_fields():
+    xml = (
+        '<!DOCTYPE Document [<!ENTITY amount "12.34">]>'
+        '<Document><IntrBkSttlmAmt Ccy="USD">&amount;</IntrBkSttlmAmt></Document>'
+    )
+    with pytest.raises(DTDForbidden):
+        iso20022_pacs008(xml)
 
 
 def test_open_payments_asset_scale_is_normalized_exactly_to_two_decimal_minor_units():
