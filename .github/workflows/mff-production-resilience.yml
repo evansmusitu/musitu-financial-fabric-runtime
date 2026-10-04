@@ -43,8 +43,8 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install production application
-        run: python -m pip install -e .
+      - name: Install evidence-locked production application
+        run: python -m pip install -c constraints-ci.txt -e . && python -m pip check
 
       - name: Start pinned PostgreSQL and TigerBeetle
         shell: bash
