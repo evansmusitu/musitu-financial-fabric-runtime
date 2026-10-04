@@ -123,3 +123,5 @@ jobs:
       - name: Capture failure diagnostics
         if: failure()
         run: docker logs musitu-mandate-postgres || true
+
+# Exact-head combined production evidence revalidation trigger; no runtime authority and no live-funds enablement.

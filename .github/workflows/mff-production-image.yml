@@ -278,3 +278,5 @@ jobs:
         shell: bash
         run: |
           docker rm -f musitu-image-production musitu-image-sandbox musitu-image-tb musitu-image-pg >/dev/null 2>&1 || true
+
+# Exact-head combined production evidence revalidation trigger; no runtime authority and no live-funds enablement.

@@ -136,3 +136,5 @@ jobs:
       - name: Cleanup
         if: always()
         run: docker rm -f musitu-merchant-race-pg >/dev/null 2>&1 || true
+
+# Exact-head combined production evidence revalidation trigger; no runtime authority and no live-funds enablement.

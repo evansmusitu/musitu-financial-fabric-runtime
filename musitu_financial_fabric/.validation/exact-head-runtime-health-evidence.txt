@@ -1,1 +1,2 @@
 Exact-head revalidation trigger after installation of the independently configured target identity and full required-runtime health evidence gate. This file carries no runtime authority and does not enable live funds.
+Combined exact-head revalidation now includes OCI packaging, merchant-suspension serialization, and mandate concurrency; this marker is inert and cannot enable funds.
