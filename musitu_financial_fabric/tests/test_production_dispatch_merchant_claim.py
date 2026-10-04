@@ -94,3 +94,4 @@ def test_active_merchant_dispatch_claim_still_commits_atomically(tmp_path, monke
     assert idem["status"] == "committed"
     assert idem["payment_id"] == "pay_claim"
 # Exact-head merchant-suspension concurrency revalidation marker only.
+# Final 14-gate exact-head revalidation marker; test behavior unchanged.

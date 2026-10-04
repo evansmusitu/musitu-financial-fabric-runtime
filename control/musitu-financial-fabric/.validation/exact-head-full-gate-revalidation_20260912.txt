@@ -2,3 +2,4 @@ purpose=exact-head full revalidation after collector unit-test fixture correctio
 runtime_effect=none
 live_funds_authorization=none
 Round: complete 14-workflow exact-head production evidence revalidation. Inert marker only; no runtime authority and no live-funds enablement.
+Round: final exact-head 14-gate proof after resilience dependency locking and immutable Hyperswitch router pin. Inert marker only; no runtime authority.

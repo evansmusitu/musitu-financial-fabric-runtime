@@ -146,3 +146,4 @@ def reconcile_monetary_truth() -> dict[str, Any]:
         "mismatches": mismatches,
     }
 # Exact-head production evidence revalidation marker only; no runtime behavior or live-funds authority.
+# Final 14-gate exact-head revalidation marker after demonstrated resilience and Hyperswitch repairs; behavior unchanged.

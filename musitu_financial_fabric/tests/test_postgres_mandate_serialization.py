@@ -37,3 +37,4 @@ def test_unrelated_postgres_queries_do_not_take_mandate_lock():
 
     assert raw.calls == [("SELECT * FROM merchants WHERE id=%s", ("mrc_test",))]
 # Exact-head mandate-concurrency revalidation marker only.
+# Final 14-gate exact-head revalidation marker; test behavior unchanged.
