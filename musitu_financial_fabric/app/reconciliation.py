@@ -145,3 +145,4 @@ def reconcile_monetary_truth() -> dict[str, Any]:
         "missing_accounts": missing,
         "mismatches": mismatches,
     }
+# Exact-head production evidence revalidation marker only; no runtime behavior or live-funds authority.

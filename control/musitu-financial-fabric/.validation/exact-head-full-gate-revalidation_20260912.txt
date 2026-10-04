@@ -1,3 +1,4 @@
 purpose=exact-head full revalidation after collector unit-test fixture correction
 runtime_effect=none
 live_funds_authorization=none
+Round: complete 14-workflow exact-head production evidence revalidation. Inert marker only; no runtime authority and no live-funds enablement.
