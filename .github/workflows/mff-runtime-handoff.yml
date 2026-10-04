@@ -1,0 +1,39 @@
+name: MFF runtime snapshot handoff
+on:
+  push:
+    branches:
+      - 'handoff/mff-runtime-snapshot-20261004-0824cat'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  snapshot:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Build exact runtime snapshot
+        env:
+          RUNTIME_SHA: a80ce52c3b8fcef3e6cece76103417236bcb0c4c
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/runtime_snapshot"
+          git archive "$RUNTIME_SHA" | tar -xf - -C "$RUNNER_TEMP/runtime_snapshot"
+          (
+            cd "$RUNNER_TEMP/runtime_snapshot"
+            find . -type f -print0 | sort -z | xargs -0 sha256sum > SNAPSHOT_MANIFEST.sha256
+            sha256sum -c SNAPSHOT_MANIFEST.sha256
+          )
+          tar -C "$RUNNER_TEMP" -czf "$RUNNER_TEMP/MFF_RUNTIME_a80ce52c3b8fcef3e6cece76103417236bcb0c4c.tar.gz" runtime_snapshot
+          sha256sum "$RUNNER_TEMP/MFF_RUNTIME_a80ce52c3b8fcef3e6cece76103417236bcb0c4c.tar.gz" > "$RUNNER_TEMP/MFF_RUNTIME_a80ce52c3b8fcef3e6cece76103417236bcb0c4c.tar.gz.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mff-runtime-snapshot-20261004-0824cat
+          path: |
+            ${{ runner.temp }}/MFF_RUNTIME_a80ce52c3b8fcef3e6cece76103417236bcb0c4c.tar.gz
+            ${{ runner.temp }}/MFF_RUNTIME_a80ce52c3b8fcef3e6cece76103417236bcb0c4c.tar.gz.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
