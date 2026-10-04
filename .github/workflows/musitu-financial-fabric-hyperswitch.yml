@@ -45,7 +45,13 @@ jobs:
           new = 'command: sh -c "apk add --no-cache bash curl jq yq && bash /seed_superposition.sh"'
           if old not in text:
               raise SystemExit('Upstream compose signature changed; refusing an unverified patch')
-          compose.write_text(text.replace(old, new, 1))
+          text = text.replace(old, new, 1)
+
+          router_old = '    image: docker.juspay.io/juspaydotin/hyperswitch-router:standalone'
+          router_new = '    image: docker.juspay.io/juspaydotin/hyperswitch-router@sha256:3d4a381b9de532dff2b9d71abd503273ee9efd58675b0f4cca6570889d11d4ed'
+          if text.count(router_old) != 1:
+              raise SystemExit('Upstream Hyperswitch router image signature changed; refusing an unverified runtime pin')
+          compose.write_text(text.replace(router_old, router_new, 1))
 
           setup = Path('scripts/setup.sh')
           text = setup.read_text()
@@ -62,6 +68,7 @@ jobs:
           setup.write_text(text.replace(old, new, 1))
           PY
           grep -F 'bash /seed_superposition.sh' docker-compose.yml
+          grep -F 'hyperswitch-router@sha256:3d4a381b9de532dff2b9d71abd503273ee9efd58675b0f4cca6570889d11d4ed' docker-compose.yml
           grep -F 'MUSITU_CI_PRESERVE_FAILED_STACK' scripts/setup.sh
       - name: Adapt only the stale Diesel allow-list hunk
         working-directory: /tmp/hyperswitch
