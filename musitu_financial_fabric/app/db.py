@@ -29,7 +29,7 @@ CREATE TABLE IF NOT EXISTS payment_idempotency (idempotency_key TEXT PRIMARY KEY
 CREATE TABLE IF NOT EXISTS scheme_participants (id TEXT PRIMARY KEY,name TEXT NOT NULL,participant_type TEXT NOT NULL,scheme_code TEXT NOT NULL UNIQUE,status TEXT NOT NULL,created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS payment_aliases (id TEXT PRIMARY KEY,participant_id TEXT NOT NULL REFERENCES scheme_participants(id),alias TEXT NOT NULL UNIQUE,account_ref TEXT NOT NULL,alias_type TEXT NOT NULL,created_at TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS ix_payment_aliases_participant ON payment_aliases(participant_id);
-CREATE TABLE IF NOT EXISTS scheme_qr_records (id TEXT PRIMARY KEY,participant_id TEXT NOT NULL REFERENCES scheme_participants(id),merchant_ref TEXT NOT NULL,alias TEXT NOT NULL,currency TEXT NOT NULL,amount_minor INTEGER,nonce TEXT NOT NULL,expires_at TEXT,created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS scheme_qr_records (id TEXT PRIMARY KEY,participant_id TEXT NOT NULL REFERENCES scheme_participants(id),merchant_ref TEXT NOT NULL,alias TEXT NOT NULL,currency TEXT NOT NULL,amount_minor INTEGER,nonce TEXT NOT NULL UNIQUE,expires_at TEXT,created_at TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS ix_scheme_qr_records_participant ON scheme_qr_records(participant_id);
 CREATE TABLE IF NOT EXISTS request_to_pay (id TEXT PRIMARY KEY,idempotency_key TEXT NOT NULL UNIQUE,request_hash TEXT NOT NULL,payee_alias TEXT NOT NULL,payer_alias TEXT NOT NULL,amount_minor INTEGER NOT NULL,currency TEXT NOT NULL,reference TEXT NOT NULL,status TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS ix_request_to_pay_payer_status ON request_to_pay(payer_alias,status);
@@ -55,7 +55,7 @@ CREATE TABLE IF NOT EXISTS payment_idempotency (idempotency_key TEXT PRIMARY KEY
 CREATE TABLE IF NOT EXISTS scheme_participants (id TEXT PRIMARY KEY,name TEXT NOT NULL,participant_type TEXT NOT NULL,scheme_code TEXT NOT NULL UNIQUE,status TEXT NOT NULL,created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS payment_aliases (id TEXT PRIMARY KEY,participant_id TEXT NOT NULL REFERENCES scheme_participants(id),alias TEXT NOT NULL UNIQUE,account_ref TEXT NOT NULL,alias_type TEXT NOT NULL,created_at TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS ix_payment_aliases_participant ON payment_aliases(participant_id);
-CREATE TABLE IF NOT EXISTS scheme_qr_records (id TEXT PRIMARY KEY,participant_id TEXT NOT NULL REFERENCES scheme_participants(id),merchant_ref TEXT NOT NULL,alias TEXT NOT NULL,currency TEXT NOT NULL,amount_minor BIGINT,nonce TEXT NOT NULL,expires_at TEXT,created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS scheme_qr_records (id TEXT PRIMARY KEY,participant_id TEXT NOT NULL REFERENCES scheme_participants(id),merchant_ref TEXT NOT NULL,alias TEXT NOT NULL,currency TEXT NOT NULL,amount_minor BIGINT,nonce TEXT NOT NULL UNIQUE,expires_at TEXT,created_at TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS ix_scheme_qr_records_participant ON scheme_qr_records(participant_id);
 CREATE TABLE IF NOT EXISTS request_to_pay (id TEXT PRIMARY KEY,idempotency_key TEXT NOT NULL UNIQUE,request_hash TEXT NOT NULL,payee_alias TEXT NOT NULL,payer_alias TEXT NOT NULL,amount_minor BIGINT NOT NULL,currency TEXT NOT NULL,reference TEXT NOT NULL,status TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS ix_request_to_pay_payer_status ON request_to_pay(payer_alias,status);
@@ -91,6 +91,18 @@ class _PostgresConnection:
             # both observe the same pre-spend total and overrun a mandate's daily
             # ceiling. Serialize only reservations for the same mandate for the
             # duration of the surrounding transaction.
+            self._conn.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                (str(bound[0]),),
+            )
+        if (
+            "select * from request_to_pay where idempotency_key=" in normalized
+            and len(bound) >= 1
+        ):
+            # SQLite BEGIN IMMEDIATE serializes the request-to-pay idempotency
+            # lookup/insert sequence. Preserve equivalent per-key serialization
+            # on PostgreSQL so concurrent identical keys observe one canonical
+            # request instead of racing the UNIQUE constraint.
             self._conn.execute(
                 "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
                 (str(bound[0]),),
