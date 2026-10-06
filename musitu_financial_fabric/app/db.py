@@ -37,11 +37,11 @@ CREATE INDEX IF NOT EXISTS ix_request_to_pay_payer_status ON request_to_pay(paye
 CREATE INDEX IF NOT EXISTS ix_request_to_pay_payee_status ON request_to_pay(payee_alias,status);
 CREATE TABLE IF NOT EXISTS scheme_certification_cases (id TEXT PRIMARY KEY,participant_id TEXT NOT NULL REFERENCES scheme_participants(id),scheme_profile TEXT NOT NULL,evidence_ref TEXT NOT NULL,required_checks_json TEXT NOT NULL,status TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS scheme_certification_checks (id TEXT PRIMARY KEY,case_id TEXT NOT NULL REFERENCES scheme_certification_cases(id),check_key TEXT NOT NULL,result TEXT NOT NULL,evidence_ref TEXT NOT NULL,actor TEXT NOT NULL,payload_hash TEXT NOT NULL,created_at TEXT NOT NULL,UNIQUE(case_id,check_key));
-CREATE TABLE IF NOT EXISTS scheme_settlement_cycles (id TEXT PRIMARY KEY,profile_key TEXT NOT NULL,cycle_ref TEXT NOT NULL UNIQUE,currency TEXT NOT NULL,status TEXT NOT NULL,settlement_evidence_ref TEXT,external_settlement_verified BOOLEAN NOT NULL DEFAULT FALSE,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS scheme_clearing_obligations (id TEXT PRIMARY KEY,cycle_id TEXT NOT NULL REFERENCES scheme_settlement_cycles(id),debtor_participant_id TEXT NOT NULL REFERENCES scheme_participants(id),creditor_participant_id TEXT NOT NULL REFERENCES scheme_participants(id),amount_minor BIGINT NOT NULL,external_ref TEXT NOT NULL UNIQUE,payload_hash TEXT NOT NULL,created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS scheme_settlement_cycles (id TEXT PRIMARY KEY,profile_key TEXT NOT NULL,cycle_ref TEXT NOT NULL,currency TEXT NOT NULL,status TEXT NOT NULL,settlement_evidence_ref TEXT,external_settlement_verified BOOLEAN NOT NULL DEFAULT FALSE,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,UNIQUE(profile_key,cycle_ref));
+CREATE TABLE IF NOT EXISTS scheme_clearing_obligations (id TEXT PRIMARY KEY,cycle_id TEXT NOT NULL REFERENCES scheme_settlement_cycles(id),debtor_participant_id TEXT NOT NULL REFERENCES scheme_participants(id),creditor_participant_id TEXT NOT NULL REFERENCES scheme_participants(id),amount_minor BIGINT NOT NULL,external_ref TEXT NOT NULL,payload_hash TEXT NOT NULL,created_at TEXT NOT NULL,UNIQUE(cycle_id,external_ref));
 CREATE INDEX IF NOT EXISTS ix_scheme_clearing_obligations_cycle ON scheme_clearing_obligations(cycle_id);
-CREATE TABLE IF NOT EXISTS scheme_settlement_cycles (id TEXT PRIMARY KEY,profile_key TEXT NOT NULL,cycle_ref TEXT NOT NULL UNIQUE,currency TEXT NOT NULL,status TEXT NOT NULL,settlement_evidence_ref TEXT,external_settlement_verified INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS scheme_clearing_obligations (id TEXT PRIMARY KEY,cycle_id TEXT NOT NULL REFERENCES scheme_settlement_cycles(id),debtor_participant_id TEXT NOT NULL REFERENCES scheme_participants(id),creditor_participant_id TEXT NOT NULL REFERENCES scheme_participants(id),amount_minor INTEGER NOT NULL,external_ref TEXT NOT NULL UNIQUE,payload_hash TEXT NOT NULL,created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS scheme_settlement_cycles (id TEXT PRIMARY KEY,profile_key TEXT NOT NULL,cycle_ref TEXT NOT NULL,currency TEXT NOT NULL,status TEXT NOT NULL,settlement_evidence_ref TEXT,external_settlement_verified INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,UNIQUE(profile_key,cycle_ref));
+CREATE TABLE IF NOT EXISTS scheme_clearing_obligations (id TEXT PRIMARY KEY,cycle_id TEXT NOT NULL REFERENCES scheme_settlement_cycles(id),debtor_participant_id TEXT NOT NULL REFERENCES scheme_participants(id),creditor_participant_id TEXT NOT NULL REFERENCES scheme_participants(id),amount_minor INTEGER NOT NULL,external_ref TEXT NOT NULL,payload_hash TEXT NOT NULL,created_at TEXT NOT NULL,UNIQUE(cycle_id,external_ref));
 CREATE INDEX IF NOT EXISTS ix_scheme_clearing_obligations_cycle ON scheme_clearing_obligations(cycle_id);
 """
 
@@ -120,15 +120,17 @@ class _PostgresConnection:
                 (str(bound[0]),),
             )
         if (
-            "select * from scheme_clearing_obligations where external_ref=" in normalized
-            and len(bound) >= 1
+            "select * from scheme_clearing_obligations where cycle_id=" in normalized
+            and "and external_ref=" in normalized
+            and len(bound) >= 2
         ):
-            # Serialize clearing obligation idempotency by external reference so
-            # concurrent retries cannot race the UNIQUE constraint and create
-            # ambiguous reference-ledger evidence.
+            # Serialize clearing obligation idempotency by cycle + external
+            # reference. External references may legitimately repeat in other
+            # sovereign schemes or settlement cycles.
+            lock_key = f"{bound[0]}:{bound[1]}"
             self._conn.execute(
                 "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
-                (str(bound[0]),),
+                (str(lock_key),),
             )
         return self._conn.execute(statement.replace("?", "%s"), bound)
 
