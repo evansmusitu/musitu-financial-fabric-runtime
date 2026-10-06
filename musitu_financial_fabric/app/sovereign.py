@@ -46,6 +46,13 @@ _SOVEREIGN_CAPABILITIES = (
         "production_enabled": False,
         "moves_funds": False,
     },
+    {
+        "key": "participant-certification",
+        "name": "Sovereign Participant Certification",
+        "phase": "reference",
+        "production_enabled": False,
+        "moves_funds": False,
+    },
 )
 
 
