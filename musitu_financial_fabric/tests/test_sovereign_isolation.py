@@ -20,6 +20,7 @@ def test_sovereign_capability_manifest_is_reference_only():
         "sovereign-directory",
         "sovereign-qr",
         "request-to-pay",
+        "zimbabwe-qr-profile",
     }
     assert all(item["phase"] == "reference" for item in capabilities)
     assert all(item["production_enabled"] is False for item in capabilities)
