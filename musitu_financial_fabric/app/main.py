@@ -21,7 +21,7 @@ from .reconciliation import reconcile_monetary_truth
 from .security import verify_hmac
 from .service import PaymentError, create_agent_mandate, create_agent_payment, create_identity, create_merchant, create_payment_intent, get_agent_mandate, get_payment, reconcile, register_webhook_event, settle_payment
 from .settlement import ProviderSettlementError, provider_fail, provider_succeed
-from .sovereign import SovereignError, create_scheme_participant, register_payment_alias, resolve_payment_alias, set_participant_status
+from .sovereign import SovereignError, create_qr_record, create_scheme_participant, register_payment_alias, resolve_payment_alias, resolve_qr_record, set_participant_status
 
 
 @asynccontextmanager
@@ -61,6 +61,15 @@ class SovereignAliasCreate(BaseModel):
     alias: str = Field(min_length=1, max_length=256)
     account_ref: str = Field(min_length=1, max_length=256)
     alias_type: str = Field(min_length=1, max_length=32)
+
+
+class SovereignQrCreate(BaseModel):
+    participant_id: str = Field(min_length=1, max_length=96)
+    merchant_ref: str = Field(min_length=1, max_length=256)
+    alias: str = Field(min_length=1, max_length=256)
+    currency: str = Field(min_length=3, max_length=3)
+    amount_minor: int | None = None
+    expires_at: str | None = None
 
 
 class MerchantReview(BaseModel):
@@ -303,6 +312,37 @@ async def sovereign_alias_get(alias: str, request: Request):
     if not resolved:
         raise HTTPException(404, "payment alias not found")
     return resolved
+
+
+@app.post("/v1/sovereign/qr")
+async def sovereign_qr_create(payload: SovereignQrCreate, request: Request):
+    await _require_resource_authorization(request, {
+        "type": "sovereign_qr",
+        "action": "create",
+        "participant_id": payload.participant_id,
+        "currency": payload.currency.upper(),
+        "amount_minor": payload.amount_minor,
+    })
+    try:
+        return create_qr_record(
+            payload.participant_id,
+            payload.merchant_ref,
+            payload.alias,
+            payload.currency,
+            amount_minor=payload.amount_minor,
+            expires_at=payload.expires_at,
+        )
+    except SovereignError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.get("/v1/sovereign/qr/{qr_id}")
+async def sovereign_qr_get(qr_id: str, nonce: str, request: Request):
+    await _require_resource_authorization(request, {"type": "sovereign_qr", "id": qr_id, "action": "read"})
+    record = resolve_qr_record(qr_id, nonce)
+    if not record:
+        raise HTTPException(404, "QR record not found")
+    return record
 
 
 @app.post("/v1/merchants")
