@@ -31,6 +31,9 @@ CREATE TABLE IF NOT EXISTS payment_aliases (id TEXT PRIMARY KEY,participant_id T
 CREATE INDEX IF NOT EXISTS ix_payment_aliases_participant ON payment_aliases(participant_id);
 CREATE TABLE IF NOT EXISTS scheme_qr_records (id TEXT PRIMARY KEY,participant_id TEXT NOT NULL REFERENCES scheme_participants(id),merchant_ref TEXT NOT NULL,alias TEXT NOT NULL,currency TEXT NOT NULL,amount_minor INTEGER,nonce TEXT NOT NULL,expires_at TEXT,created_at TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS ix_scheme_qr_records_participant ON scheme_qr_records(participant_id);
+CREATE TABLE IF NOT EXISTS request_to_pay (id TEXT PRIMARY KEY,idempotency_key TEXT NOT NULL UNIQUE,request_hash TEXT NOT NULL,payee_alias TEXT NOT NULL,payer_alias TEXT NOT NULL,amount_minor INTEGER NOT NULL,currency TEXT NOT NULL,reference TEXT NOT NULL,status TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS ix_request_to_pay_payer_status ON request_to_pay(payer_alias,status);
+CREATE INDEX IF NOT EXISTS ix_request_to_pay_payee_status ON request_to_pay(payee_alias,status);
 """
 
 POSTGRES_SCHEMA = """
@@ -54,6 +57,9 @@ CREATE TABLE IF NOT EXISTS payment_aliases (id TEXT PRIMARY KEY,participant_id T
 CREATE INDEX IF NOT EXISTS ix_payment_aliases_participant ON payment_aliases(participant_id);
 CREATE TABLE IF NOT EXISTS scheme_qr_records (id TEXT PRIMARY KEY,participant_id TEXT NOT NULL REFERENCES scheme_participants(id),merchant_ref TEXT NOT NULL,alias TEXT NOT NULL,currency TEXT NOT NULL,amount_minor BIGINT,nonce TEXT NOT NULL,expires_at TEXT,created_at TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS ix_scheme_qr_records_participant ON scheme_qr_records(participant_id);
+CREATE TABLE IF NOT EXISTS request_to_pay (id TEXT PRIMARY KEY,idempotency_key TEXT NOT NULL UNIQUE,request_hash TEXT NOT NULL,payee_alias TEXT NOT NULL,payer_alias TEXT NOT NULL,amount_minor BIGINT NOT NULL,currency TEXT NOT NULL,reference TEXT NOT NULL,status TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS ix_request_to_pay_payer_status ON request_to_pay(payer_alias,status);
+CREATE INDEX IF NOT EXISTS ix_request_to_pay_payee_status ON request_to_pay(payee_alias,status);
 """
 
 
