@@ -21,7 +21,7 @@ from .reconciliation import reconcile_monetary_truth
 from .security import verify_hmac
 from .service import PaymentError, create_agent_mandate, create_agent_payment, create_identity, create_merchant, create_payment_intent, get_agent_mandate, get_payment, reconcile, register_webhook_event, settle_payment
 from .settlement import ProviderSettlementError, provider_fail, provider_succeed
-from .sovereign import SovereignError, calculate_net_positions, close_settlement_cycle, create_certification_case, create_qr_record, create_request_to_pay, create_scheme_exception, create_scheme_participant, decide_certification, decide_scheme_exception, open_settlement_cycle, record_certification_check, record_clearing_obligation, record_exception_evidence, register_payment_alias, register_qr_scheme_profile, resolve_payment_alias, resolve_qr_record, respond_request_to_pay, set_participant_status, sovereign_capabilities
+from .sovereign import SovereignError, calculate_net_positions, close_settlement_cycle, country_profile_gate, create_certification_case, create_qr_record, create_request_to_pay, create_scheme_exception, create_scheme_participant, decide_certification, decide_scheme_exception, open_settlement_cycle, record_certification_check, record_clearing_obligation, record_exception_evidence, register_payment_alias, register_qr_scheme_profile, resolve_payment_alias, resolve_qr_record, respond_request_to_pay, set_country_profile_dependency, set_participant_status, sovereign_capabilities
 
 
 @asynccontextmanager
@@ -78,6 +78,11 @@ class SovereignCertificationCheck(BaseModel):
 
 class SovereignCertificationDecision(BaseModel):
     decision: str = Field(min_length=8, max_length=8)
+
+
+class SovereignCountryDependencySet(BaseModel):
+    status: str = Field(min_length=9, max_length=19)
+    evidence_ref: str | None = Field(default=None, max_length=512)
 
 
 class SovereignExceptionCreate(BaseModel):
@@ -330,6 +335,49 @@ async def mandate_get(mandate_id: str, request: Request):
 async def sovereign_capabilities_get(request: Request):
     await _require_resource_authorization(request, {"type": "sovereign_capabilities", "action": "read"})
     return {"phase": "reference", "capabilities": sovereign_capabilities()}
+
+
+@app.get("/v1/sovereign/country-profiles/{profile_key}/gate")
+async def sovereign_country_profile_gate(profile_key: str, request: Request):
+    await _require_resource_authorization(request, {
+        "type": "sovereign_country_profile",
+        "id": profile_key.lower(),
+        "action": "read_gate",
+    })
+    try:
+        return country_profile_gate(profile_key)
+    except SovereignError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/v1/sovereign/country-profiles/{profile_key}/dependencies/{dependency_key}")
+async def sovereign_country_profile_dependency_set(
+    profile_key: str,
+    dependency_key: str,
+    payload: SovereignCountryDependencySet,
+    request: Request,
+):
+    resource_decision = await _require_resource_authorization(request, {
+        "type": "sovereign_country_profile_dependency",
+        "profile_key": profile_key.lower(),
+        "dependency_key": dependency_key.lower(),
+        "action": "set_status",
+        "status": payload.status.lower(),
+    })
+    principal = getattr(request.state, "principal", {}) or {}
+    actor = str(principal.get("sub") or principal.get("client_id") or ("sandbox" if not settings.is_production else "")).strip()
+    decision_id = str(resource_decision.get("decision_id") or ("sandbox" if not settings.is_production else "")).strip()
+    try:
+        return set_country_profile_dependency(
+            profile_key,
+            dependency_key,
+            payload.status,
+            evidence_ref=payload.evidence_ref or "",
+            actor=actor,
+            authorization_decision_id=decision_id,
+        )
+    except SovereignError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @app.post("/v1/sovereign/exceptions")
