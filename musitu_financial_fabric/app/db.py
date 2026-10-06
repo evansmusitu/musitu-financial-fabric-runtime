@@ -26,6 +26,12 @@ CREATE TABLE IF NOT EXISTS route_decisions (id INTEGER PRIMARY KEY AUTOINCREMENT
 CREATE TABLE IF NOT EXISTS agent_mandate_reservations (idempotency_key TEXT PRIMARY KEY,mandate_id TEXT NOT NULL REFERENCES agent_mandates(id),day_utc TEXT NOT NULL,amount_minor INTEGER NOT NULL,currency TEXT NOT NULL,status TEXT NOT NULL,payment_id TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS ix_agent_mandate_reservations_daily ON agent_mandate_reservations(mandate_id,day_utc,status);
 CREATE TABLE IF NOT EXISTS payment_idempotency (idempotency_key TEXT PRIMARY KEY,request_hash TEXT NOT NULL,status TEXT NOT NULL,payment_id TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS scheme_participants (id TEXT PRIMARY KEY,name TEXT NOT NULL,participant_type TEXT NOT NULL,scheme_code TEXT NOT NULL UNIQUE,status TEXT NOT NULL,created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS payment_aliases (id TEXT PRIMARY KEY,participant_id TEXT NOT NULL REFERENCES scheme_participants(id),alias TEXT NOT NULL UNIQUE,account_ref TEXT NOT NULL,alias_type TEXT NOT NULL,created_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS ix_payment_aliases_participant ON payment_aliases(participant_id);
+CREATE TABLE IF NOT EXISTS scheme_participants (id TEXT PRIMARY KEY,name TEXT NOT NULL,participant_type TEXT NOT NULL,scheme_code TEXT NOT NULL UNIQUE,status TEXT NOT NULL,created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS payment_aliases (id TEXT PRIMARY KEY,participant_id TEXT NOT NULL REFERENCES scheme_participants(id),alias TEXT NOT NULL UNIQUE,account_ref TEXT NOT NULL,alias_type TEXT NOT NULL,created_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS ix_payment_aliases_participant ON payment_aliases(participant_id);
 """
 
 POSTGRES_SCHEMA = """
