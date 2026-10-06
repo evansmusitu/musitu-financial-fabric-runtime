@@ -876,6 +876,261 @@ def close_settlement_cycle(
     return _clearing_cycle_public(dict(result))
 
 
+SCHEME_EXCEPTION_KINDS = {"refund_request", "reversal_request", "dispute"}
+SCHEME_EXCEPTION_DECISIONS = {"accepted", "rejected", "withdrawn"}
+
+
+def _scheme_exception_public(row: dict) -> dict:
+    return {
+        "id": row["id"],
+        "transaction_ref": row["transaction_ref"],
+        "kind": row["kind"],
+        "claimant_participant_id": row["claimant_participant_id"],
+        "reason": row["reason"],
+        "status": row["status"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def create_scheme_exception(
+    transaction_ref: str,
+    kind: str,
+    claimant_participant_id: str,
+    reason: str,
+    idempotency_key: str,
+) -> dict:
+    transaction_ref = str(transaction_ref or "").strip()
+    kind = str(kind or "").strip().lower()
+    claimant_participant_id = str(claimant_participant_id or "").strip()
+    reason = str(reason or "").strip()
+    idempotency_key = str(idempotency_key or "").strip()
+    if not transaction_ref:
+        raise SovereignError("scheme exception transaction reference is required")
+    if kind not in SCHEME_EXCEPTION_KINDS:
+        raise SovereignError("unsupported scheme exception kind")
+    if not claimant_participant_id:
+        raise SovereignError("scheme exception claimant participant is required")
+    if not reason:
+        raise SovereignError("scheme exception reason is required")
+    if not idempotency_key:
+        raise SovereignError("scheme exception idempotency key is required")
+
+    request_payload = {
+        "transaction_ref": transaction_ref,
+        "kind": kind,
+        "claimant_participant_id": claimant_participant_id,
+        "reason": reason,
+    }
+    request_hash = hashlib.sha256(
+        json.dumps(request_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    exception_id = f"exc_{uuid.uuid4().hex}"
+    ts = now_iso()
+
+    with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            existing = conn.execute(
+                "SELECT * FROM scheme_exceptions WHERE idempotency_key=?",
+                (idempotency_key,),
+            ).fetchone()
+            if existing:
+                existing = dict(existing)
+                if existing["request_hash"] != request_hash:
+                    raise SovereignError("scheme exception idempotency key conflicts with a different request")
+                conn.execute("COMMIT")
+                return _scheme_exception_public(existing)
+
+            claimant = conn.execute(
+                "SELECT id,status FROM scheme_participants WHERE id=?",
+                (claimant_participant_id,),
+            ).fetchone()
+            if not claimant:
+                raise SovereignError("scheme exception claimant participant not found")
+            if claimant["status"] not in {"active", "sandbox"}:
+                raise SovereignError("scheme exception claimant participant is not active")
+
+            conn.execute(
+                """INSERT INTO scheme_exceptions
+                   (id,idempotency_key,request_hash,transaction_ref,kind,
+                    claimant_participant_id,reason,status,created_at,updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    exception_id,
+                    idempotency_key,
+                    request_hash,
+                    transaction_ref,
+                    kind,
+                    claimant_participant_id,
+                    reason,
+                    "open",
+                    ts,
+                    ts,
+                ),
+            )
+            append_audit(
+                "sovereign.scheme_exception_created",
+                exception_id,
+                request_payload | {"idempotency_key": idempotency_key},
+                conn=conn,
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
+
+    return {
+        "id": exception_id,
+        **request_payload,
+        "status": "open",
+        "created_at": ts,
+        "updated_at": ts,
+    }
+
+
+def record_exception_evidence(exception_id: str, evidence_ref: str, actor: str) -> dict:
+    exception_id = str(exception_id or "").strip()
+    evidence_ref = str(evidence_ref or "").strip()
+    actor = str(actor or "").strip()
+    if not exception_id:
+        raise SovereignError("scheme exception is required")
+    if not evidence_ref:
+        raise SovereignError("scheme exception evidence reference is required")
+    if not actor:
+        raise SovereignError("scheme exception evidence actor is required")
+
+    payload = {
+        "exception_id": exception_id,
+        "evidence_ref": evidence_ref,
+        "actor": actor,
+    }
+    payload_hash = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+    with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            case = conn.execute(
+                "SELECT * FROM scheme_exceptions WHERE id=?",
+                (exception_id,),
+            ).fetchone()
+            if not case:
+                raise SovereignError("scheme exception not found")
+            if case["status"] != "open":
+                raise SovereignError("scheme exception is terminal")
+
+            existing = conn.execute(
+                """SELECT * FROM scheme_exception_evidence
+                   WHERE exception_id=? AND evidence_ref=?""",
+                (exception_id, evidence_ref),
+            ).fetchone()
+            if existing:
+                existing = dict(existing)
+                if existing["payload_hash"] != payload_hash:
+                    raise SovereignError("conflicting scheme exception evidence replay")
+                conn.execute("COMMIT")
+                return existing
+
+            evidence_id = f"evd_{uuid.uuid4().hex}"
+            created_at = now_iso()
+            conn.execute(
+                """INSERT INTO scheme_exception_evidence
+                   (id,exception_id,evidence_ref,actor,payload_hash,created_at)
+                   VALUES (?,?,?,?,?,?)""",
+                (
+                    evidence_id,
+                    exception_id,
+                    evidence_ref,
+                    actor,
+                    payload_hash,
+                    created_at,
+                ),
+            )
+            append_audit(
+                "sovereign.scheme_exception_evidence_recorded",
+                evidence_id,
+                payload,
+                conn=conn,
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
+
+    return {
+        "id": evidence_id,
+        **payload,
+        "payload_hash": payload_hash,
+        "created_at": created_at,
+    }
+
+
+def decide_scheme_exception(
+    exception_id: str,
+    decision: str,
+    actor: str,
+    authorization_decision_id: str,
+) -> dict:
+    exception_id = str(exception_id or "").strip()
+    decision = str(decision or "").strip().lower()
+    actor = str(actor or "").strip()
+    authorization_decision_id = str(authorization_decision_id or "").strip()
+    if decision not in SCHEME_EXCEPTION_DECISIONS:
+        raise SovereignError("unsupported scheme exception decision")
+    if not actor:
+        raise SovereignError("scheme exception decision actor is required")
+    if not authorization_decision_id:
+        raise SovereignError("scheme exception authorization decision is required")
+
+    with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            case = conn.execute(
+                "SELECT * FROM scheme_exceptions WHERE id=?",
+                (exception_id,),
+            ).fetchone()
+            if not case:
+                raise SovereignError("scheme exception not found")
+            if case["status"] != "open":
+                raise SovereignError("scheme exception is terminal")
+
+            ts = now_iso()
+            updated = conn.execute(
+                "UPDATE scheme_exceptions SET status=?,updated_at=? WHERE id=? AND status='open'",
+                (decision, ts, exception_id),
+            )
+            if updated.rowcount != 1:
+                raise SovereignError("scheme exception changed before decision commit")
+            append_audit(
+                "sovereign.scheme_exception_decided",
+                exception_id,
+                {
+                    "decision": decision,
+                    "actor": actor,
+                    "authorization_decision_id": authorization_decision_id,
+                },
+                conn=conn,
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
+
+    with connect() as conn:
+        result = conn.execute(
+            "SELECT * FROM scheme_exceptions WHERE id=?",
+            (exception_id,),
+        ).fetchone()
+    if not result:
+        raise SovereignError("scheme exception disappeared after decision")
+    return _scheme_exception_public(dict(result))
+
+
 def _currency_code(value: str) -> str:
     currency = str(value or "").strip().upper()
     if len(currency) != 3 or not currency.isalpha():
