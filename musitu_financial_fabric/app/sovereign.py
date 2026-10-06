@@ -39,6 +39,13 @@ _SOVEREIGN_CAPABILITIES = (
         "production_enabled": False,
         "moves_funds": False,
     },
+    {
+        "key": "zimbabwe-qr-profile",
+        "name": "Zimbabwe 2026 QR Reference Profile",
+        "phase": "reference",
+        "production_enabled": False,
+        "moves_funds": False,
+    },
 )
 
 
@@ -263,6 +270,87 @@ def resolve_payment_alias(alias: str) -> dict | None:
     return dict(row)
 
 
+def register_qr_scheme_profile(
+    participant_id: str,
+    profile_key: str,
+    mai_id: str,
+    allocation_ref: str,
+) -> dict:
+    participant_id = str(participant_id or "").strip()
+    profile_key = str(profile_key or "").strip().lower()
+    mai_id = str(mai_id or "").strip()
+    allocation_ref = str(allocation_ref or "").strip()
+    if not participant_id:
+        raise SovereignError("scheme participant is required")
+    if not profile_key:
+        raise SovereignError("QR profile key is required")
+    if len(mai_id) != 2 or not mai_id.isdigit():
+        raise SovereignError("MAI identifier must be a two-digit numeric value")
+    if not allocation_ref:
+        raise SovereignError("MAI allocation reference is required")
+
+    profile_id = f"qsp_{uuid.uuid4().hex}"
+    created_at = now_iso()
+    with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            participant = conn.execute(
+                "SELECT * FROM scheme_participants WHERE id=?",
+                (participant_id,),
+            ).fetchone()
+            if not participant:
+                raise SovereignError("scheme participant not found")
+            if participant["status"] not in {"active", "sandbox"}:
+                raise SovereignError("scheme participant is not active for QR profile registration")
+
+            existing_mai = conn.execute(
+                "SELECT id FROM qr_scheme_profiles WHERE profile_key=? AND mai_id=?",
+                (profile_key, mai_id),
+            ).fetchone()
+            if existing_mai:
+                raise SovereignError("MAI identifier is already registered for this profile")
+            existing_participant = conn.execute(
+                "SELECT id FROM qr_scheme_profiles WHERE profile_key=? AND participant_id=?",
+                (profile_key, participant_id),
+            ).fetchone()
+            if existing_participant:
+                raise SovereignError("participant already has a QR scheme profile")
+
+            conn.execute(
+                """INSERT INTO qr_scheme_profiles
+                   (id,participant_id,profile_key,mai_id,allocation_ref,external_verification,created_at)
+                   VALUES (?,?,?,?,?,?,?)""",
+                (profile_id, participant_id, profile_key, mai_id, allocation_ref, False, created_at),
+            )
+            append_audit(
+                "sovereign.qr_scheme_profile_registered",
+                profile_id,
+                {
+                    "participant_id": participant_id,
+                    "profile_key": profile_key,
+                    "mai_id": mai_id,
+                    "allocation_ref": allocation_ref,
+                    "external_verification": False,
+                },
+                conn=conn,
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
+
+    return {
+        "id": profile_id,
+        "participant_id": participant_id,
+        "profile_key": profile_key,
+        "mai_id": mai_id,
+        "allocation_ref": allocation_ref,
+        "external_verification": False,
+        "created_at": created_at,
+    }
+
+
 def _currency_code(value: str) -> str:
     currency = str(value or "").strip().upper()
     if len(currency) != 3 or not currency.isalpha():
@@ -291,15 +379,25 @@ def create_qr_record(
     *,
     amount_minor: int | None = None,
     expires_at: str | None = None,
+    profile_key: str = "generic",
+    scheme_profile_id: str | None = None,
+    channel: str = "pos",
 ) -> dict:
     participant_id = str(participant_id or "").strip()
     merchant_ref = str(merchant_ref or "").strip()
     normalized_alias = str(alias or "").strip().lower()
     currency = _currency_code(currency)
+    profile_key = str(profile_key or "generic").strip().lower()
+    scheme_profile_id = str(scheme_profile_id or "").strip() or None
+    channel = str(channel or "pos").strip().lower()
     if not participant_id:
         raise SovereignError("scheme participant is required")
     if not merchant_ref:
         raise SovereignError("merchant reference is required")
+    if not profile_key:
+        raise SovereignError("QR profile key is required")
+    if not channel:
+        raise SovereignError("QR channel is required")
     if amount_minor is not None and int(amount_minor) <= 0:
         raise SovereignError("dynamic QR amount must be positive")
     expiry = _expiry(expires_at)
@@ -314,13 +412,42 @@ def create_qr_record(
     nonce = uuid.uuid4().hex
     created_at = now_iso()
     stored_expiry = expiry.isoformat() if expiry is not None else None
+
+    if profile_key == "zimbabwe-2026":
+        if amount_minor is None:
+            raise SovereignError("Zimbabwe profile requires dynamic QR amount")
+        if expiry is None:
+            raise SovereignError("Zimbabwe profile requires QR expiry")
+        if expiry <= datetime.now(timezone.utc):
+            raise SovereignError("Zimbabwe profile QR expiry must be in the future")
+        if not scheme_profile_id:
+            raise SovereignError("Zimbabwe profile requires a registered scheme profile")
+        with connect() as conn:
+            scheme_profile = conn.execute(
+                "SELECT * FROM qr_scheme_profiles WHERE id=? AND profile_key=?",
+                (scheme_profile_id, profile_key),
+            ).fetchone()
+        if not scheme_profile:
+            raise SovereignError("Zimbabwe scheme profile is not registered")
+        point_of_initiation_method = "12"
+        reference_tag_62_05 = nonce
+        serialization_status = "normalized_not_emvco_certified"
+    else:
+        if scheme_profile_id:
+            raise SovereignError("scheme profile id is only supported by an explicit QR profile")
+        point_of_initiation_method = "12" if amount_minor is not None else "11"
+        reference_tag_62_05 = nonce if amount_minor is not None else None
+        serialization_status = "internal_reference"
+
     with connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
         try:
             conn.execute(
                 """INSERT INTO scheme_qr_records
-                   (id,participant_id,merchant_ref,alias,currency,amount_minor,nonce,expires_at,created_at)
-                   VALUES (?,?,?,?,?,?,?,?,?)""",
+                   (id,participant_id,merchant_ref,alias,currency,amount_minor,nonce,expires_at,
+                    profile_key,scheme_profile_id,channel,point_of_initiation_method,
+                    reference_tag_62_05,serialization_status,created_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     qr_id,
                     participant_id,
@@ -330,6 +457,12 @@ def create_qr_record(
                     int(amount_minor) if amount_minor is not None else None,
                     nonce,
                     stored_expiry,
+                    profile_key,
+                    scheme_profile_id,
+                    channel,
+                    point_of_initiation_method,
+                    reference_tag_62_05,
+                    serialization_status,
                     created_at,
                 ),
             )
@@ -343,6 +476,12 @@ def create_qr_record(
                     "currency": currency,
                     "amount_minor": int(amount_minor) if amount_minor is not None else None,
                     "expires_at": stored_expiry,
+                    "profile_key": profile_key,
+                    "scheme_profile_id": scheme_profile_id,
+                    "channel": channel,
+                    "point_of_initiation_method": point_of_initiation_method,
+                    "reference_tag_62_05": reference_tag_62_05,
+                    "serialization_status": serialization_status,
                 },
                 conn=conn,
             )
@@ -360,6 +499,12 @@ def create_qr_record(
         "amount_minor": int(amount_minor) if amount_minor is not None else None,
         "nonce": nonce,
         "expires_at": stored_expiry,
+        "profile_key": profile_key,
+        "scheme_profile_id": scheme_profile_id,
+        "channel": channel,
+        "point_of_initiation_method": point_of_initiation_method,
+        "reference_tag_62_05": reference_tag_62_05,
+        "serialization_status": serialization_status,
         "created_at": created_at,
     }
 
@@ -382,6 +527,17 @@ def resolve_qr_record(qr_id: str, nonce: str) -> dict | None:
         return None
     if resolve_payment_alias(record["alias"]) is None:
         return None
+    if record.get("profile_key") == "zimbabwe-2026":
+        scheme_profile_id = str(record.get("scheme_profile_id") or "").strip()
+        if not scheme_profile_id:
+            return None
+        with connect() as conn:
+            scheme_profile = conn.execute(
+                "SELECT id FROM qr_scheme_profiles WHERE id=? AND profile_key='zimbabwe-2026'",
+                (scheme_profile_id,),
+            ).fetchone()
+        if not scheme_profile:
+            return None
     return record
 
 
