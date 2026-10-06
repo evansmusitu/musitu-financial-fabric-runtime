@@ -143,6 +143,29 @@ def test_suspended_participant_alias_fails_closed_and_reactivation_restores_reso
     assert sovereign.resolve_payment_alias(alias["alias"])["account_ref"] == "acct-payer"
 
 
+
+def test_participant_status_endpoint_applies_lifecycle(tmp_path, monkeypatch):
+    with client_for(tmp_path, monkeypatch) as client:
+        participant = client.post(
+            "/v1/sovereign/participants",
+            json={"name": "Endpoint PSP", "participant_type": "psp", "scheme_code": "ENDPOINT1"},
+        ).json()
+
+        activated = client.post(
+            f"/v1/sovereign/participants/{participant['id']}/status",
+            json={"status": "active", "evidence_ref": "sandbox-activation"},
+        )
+        assert activated.status_code == 200
+        assert activated.json()["status"] == "active"
+
+        suspended = client.post(
+            f"/v1/sovereign/participants/{participant['id']}/status",
+            json={"status": "suspended", "evidence_ref": "sandbox-risk-hold"},
+        )
+        assert suspended.status_code == 200
+        assert suspended.json()["status"] == "suspended"
+
+
 def test_directory_mutations_preserve_audit_chain(tmp_path, monkeypatch):
     with client_for(tmp_path, monkeypatch) as client:
         participant = client.post(
