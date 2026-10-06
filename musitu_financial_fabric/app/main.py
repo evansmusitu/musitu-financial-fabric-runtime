@@ -21,7 +21,7 @@ from .reconciliation import reconcile_monetary_truth
 from .security import verify_hmac
 from .service import PaymentError, create_agent_mandate, create_agent_payment, create_identity, create_merchant, create_payment_intent, get_agent_mandate, get_payment, reconcile, register_webhook_event, settle_payment
 from .settlement import ProviderSettlementError, provider_fail, provider_succeed
-from .sovereign import SovereignError, create_certification_case, create_qr_record, create_request_to_pay, create_scheme_participant, decide_certification, record_certification_check, register_payment_alias, register_qr_scheme_profile, resolve_payment_alias, resolve_qr_record, respond_request_to_pay, set_participant_status, sovereign_capabilities
+from .sovereign import SovereignError, calculate_net_positions, close_settlement_cycle, create_certification_case, create_qr_record, create_request_to_pay, create_scheme_participant, decide_certification, open_settlement_cycle, record_certification_check, record_clearing_obligation, register_payment_alias, register_qr_scheme_profile, resolve_payment_alias, resolve_qr_record, respond_request_to_pay, set_participant_status, sovereign_capabilities
 
 
 @asynccontextmanager
@@ -78,6 +78,23 @@ class SovereignCertificationCheck(BaseModel):
 
 class SovereignCertificationDecision(BaseModel):
     decision: str = Field(min_length=8, max_length=8)
+
+
+class SovereignSettlementCycleCreate(BaseModel):
+    profile_key: str = Field(min_length=1, max_length=96)
+    cycle_ref: str = Field(min_length=1, max_length=256)
+    currency: str = Field(min_length=3, max_length=3)
+
+
+class SovereignClearingObligationCreate(BaseModel):
+    debtor_participant_id: str = Field(min_length=1, max_length=96)
+    creditor_participant_id: str = Field(min_length=1, max_length=96)
+    amount_minor: int = Field(gt=0)
+    external_ref: str = Field(min_length=1, max_length=256)
+
+
+class SovereignSettlementCycleClose(BaseModel):
+    evidence_ref: str = Field(min_length=1, max_length=512)
 
 
 class SovereignQrSchemeProfileCreate(BaseModel):
@@ -298,6 +315,86 @@ async def mandate_get(mandate_id: str, request: Request):
 async def sovereign_capabilities_get(request: Request):
     await _require_resource_authorization(request, {"type": "sovereign_capabilities", "action": "read"})
     return {"phase": "reference", "capabilities": sovereign_capabilities()}
+
+
+@app.post("/v1/sovereign/settlement-cycles")
+async def sovereign_settlement_cycle_create(payload: SovereignSettlementCycleCreate, request: Request):
+    await _require_resource_authorization(request, {
+        "type": "sovereign_settlement_cycle",
+        "action": "create",
+        "profile_key": payload.profile_key.lower(),
+        "cycle_ref": payload.cycle_ref,
+        "currency": payload.currency.upper(),
+    })
+    try:
+        return open_settlement_cycle(payload.profile_key, payload.cycle_ref, payload.currency)
+    except SovereignError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/v1/sovereign/settlement-cycles/{cycle_id}/obligations")
+async def sovereign_clearing_obligation_create(
+    cycle_id: str,
+    payload: SovereignClearingObligationCreate,
+    request: Request,
+):
+    await _require_resource_authorization(request, {
+        "type": "sovereign_clearing_obligation",
+        "action": "create",
+        "cycle_id": cycle_id,
+        "debtor_participant_id": payload.debtor_participant_id,
+        "creditor_participant_id": payload.creditor_participant_id,
+        "amount_minor": payload.amount_minor,
+        "external_ref": payload.external_ref,
+    })
+    try:
+        return record_clearing_obligation(
+            cycle_id,
+            payload.debtor_participant_id,
+            payload.creditor_participant_id,
+            payload.amount_minor,
+            payload.external_ref,
+        )
+    except SovereignError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.get("/v1/sovereign/settlement-cycles/{cycle_id}/positions")
+async def sovereign_settlement_cycle_positions(cycle_id: str, request: Request):
+    await _require_resource_authorization(request, {
+        "type": "sovereign_settlement_cycle",
+        "id": cycle_id,
+        "action": "read_positions",
+    })
+    try:
+        return calculate_net_positions(cycle_id)
+    except SovereignError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/v1/sovereign/settlement-cycles/{cycle_id}/close")
+async def sovereign_settlement_cycle_close(
+    cycle_id: str,
+    payload: SovereignSettlementCycleClose,
+    request: Request,
+):
+    resource_decision = await _require_resource_authorization(request, {
+        "type": "sovereign_settlement_cycle",
+        "id": cycle_id,
+        "action": "close",
+    })
+    principal = getattr(request.state, "principal", {}) or {}
+    actor = str(principal.get("sub") or principal.get("client_id") or ("sandbox" if not settings.is_production else "")).strip()
+    decision_id = str(resource_decision.get("decision_id") or ("sandbox" if not settings.is_production else "")).strip()
+    try:
+        return close_settlement_cycle(
+            cycle_id,
+            payload.evidence_ref,
+            actor,
+            decision_id,
+        )
+    except SovereignError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @app.post("/v1/sovereign/certifications")
