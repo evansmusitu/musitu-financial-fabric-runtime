@@ -21,6 +21,7 @@ from .reconciliation import reconcile_monetary_truth
 from .security import verify_hmac
 from .service import PaymentError, create_agent_mandate, create_agent_payment, create_identity, create_merchant, create_payment_intent, get_agent_mandate, get_payment, reconcile, register_webhook_event, settle_payment
 from .settlement import ProviderSettlementError, provider_fail, provider_succeed
+from .sovereign import SovereignError, create_scheme_participant, register_payment_alias, resolve_payment_alias
 
 
 @asynccontextmanager
@@ -42,6 +43,19 @@ async def production_gate_error(_: Request, exc: ProductionGateError):
 class MerchantCreate(BaseModel):
     name: str = Field(min_length=2, max_length=160)
     currency: str = Field(default="USD", min_length=3, max_length=3)
+
+
+class SovereignParticipantCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=160)
+    participant_type: str = Field(min_length=1, max_length=32)
+    scheme_code: str = Field(min_length=1, max_length=64)
+
+
+class SovereignAliasCreate(BaseModel):
+    participant_id: str = Field(min_length=1, max_length=96)
+    alias: str = Field(min_length=1, max_length=256)
+    account_ref: str = Field(min_length=1, max_length=256)
+    alias_type: str = Field(min_length=1, max_length=32)
 
 
 class MerchantReview(BaseModel):
@@ -224,6 +238,43 @@ async def mandate_get(mandate_id: str, request: Request):
     if not data:
         raise HTTPException(404, "mandate not found")
     return data
+
+
+@app.post("/v1/sovereign/participants")
+async def sovereign_participant_create(payload: SovereignParticipantCreate, request: Request):
+    await _require_resource_authorization(request, {
+        "type": "sovereign_participant",
+        "action": "create",
+        "participant_type": payload.participant_type.lower(),
+        "scheme_code": payload.scheme_code,
+    })
+    try:
+        return create_scheme_participant(payload.name, payload.participant_type, payload.scheme_code)
+    except SovereignError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/v1/sovereign/aliases")
+async def sovereign_alias_create(payload: SovereignAliasCreate, request: Request):
+    await _require_resource_authorization(request, {
+        "type": "sovereign_alias",
+        "action": "create",
+        "participant_id": payload.participant_id,
+        "alias_type": payload.alias_type.lower(),
+    })
+    try:
+        return register_payment_alias(payload.participant_id, payload.alias, payload.account_ref, payload.alias_type)
+    except SovereignError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.get("/v1/sovereign/aliases/{alias}")
+async def sovereign_alias_get(alias: str, request: Request):
+    await _require_resource_authorization(request, {"type": "sovereign_alias", "action": "read", "alias": alias.lower()})
+    resolved = resolve_payment_alias(alias)
+    if not resolved:
+        raise HTTPException(404, "payment alias not found")
+    return resolved
 
 
 @app.post("/v1/merchants")
