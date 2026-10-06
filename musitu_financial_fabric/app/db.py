@@ -42,6 +42,8 @@ CREATE TABLE IF NOT EXISTS scheme_clearing_obligations (id TEXT PRIMARY KEY,cycl
 CREATE INDEX IF NOT EXISTS ix_scheme_clearing_obligations_cycle ON scheme_clearing_obligations(cycle_id);
 CREATE TABLE IF NOT EXISTS scheme_exceptions (id TEXT PRIMARY KEY,idempotency_key TEXT NOT NULL UNIQUE,request_hash TEXT NOT NULL,transaction_ref TEXT NOT NULL,kind TEXT NOT NULL,claimant_participant_id TEXT NOT NULL REFERENCES scheme_participants(id),reason TEXT NOT NULL,status TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS scheme_exception_evidence (id TEXT PRIMARY KEY,exception_id TEXT NOT NULL REFERENCES scheme_exceptions(id),evidence_ref TEXT NOT NULL,actor TEXT NOT NULL,payload_hash TEXT NOT NULL,created_at TEXT NOT NULL,UNIQUE(exception_id,evidence_ref));
+CREATE TABLE IF NOT EXISTS country_profile_dependencies (id TEXT PRIMARY KEY,profile_key TEXT NOT NULL,dependency_key TEXT NOT NULL,status TEXT NOT NULL,evidence_ref TEXT,actor TEXT NOT NULL,authorization_decision_id TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,UNIQUE(profile_key,dependency_key));
+CREATE TABLE IF NOT EXISTS country_profile_dependencies (id TEXT PRIMARY KEY,profile_key TEXT NOT NULL,dependency_key TEXT NOT NULL,status TEXT NOT NULL,evidence_ref TEXT,actor TEXT NOT NULL,authorization_decision_id TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,UNIQUE(profile_key,dependency_key));
 CREATE TABLE IF NOT EXISTS scheme_exceptions (id TEXT PRIMARY KEY,idempotency_key TEXT NOT NULL UNIQUE,request_hash TEXT NOT NULL,transaction_ref TEXT NOT NULL,kind TEXT NOT NULL,claimant_participant_id TEXT NOT NULL REFERENCES scheme_participants(id),reason TEXT NOT NULL,status TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS scheme_exception_evidence (id TEXT PRIMARY KEY,exception_id TEXT NOT NULL REFERENCES scheme_exceptions(id),evidence_ref TEXT NOT NULL,actor TEXT NOT NULL,payload_hash TEXT NOT NULL,created_at TEXT NOT NULL,UNIQUE(exception_id,evidence_ref));
 CREATE TABLE IF NOT EXISTS scheme_settlement_cycles (id TEXT PRIMARY KEY,profile_key TEXT NOT NULL,cycle_ref TEXT NOT NULL,currency TEXT NOT NULL,status TEXT NOT NULL,settlement_evidence_ref TEXT,external_settlement_verified INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,UNIQUE(profile_key,cycle_ref));
@@ -147,6 +149,16 @@ class _PostgresConnection:
         if (
             "select * from scheme_exception_evidence where exception_id=" in normalized
             and "and evidence_ref=" in normalized
+            and len(bound) >= 2
+        ):
+            lock_key = f"{bound[0]}:{bound[1]}"
+            self._conn.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                (str(lock_key),),
+            )
+        if (
+            "select * from country_profile_dependencies where profile_key=" in normalized
+            and "and dependency_key=" in normalized
             and len(bound) >= 2
         ):
             lock_key = f"{bound[0]}:{bound[1]}"
