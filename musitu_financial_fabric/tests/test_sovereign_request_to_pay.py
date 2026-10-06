@@ -180,3 +180,36 @@ def test_request_to_pay_requires_resolvable_aliases_positive_amount_and_currency
             },
         )
         assert missing_alias.status_code == 400
+
+
+def test_suspended_actor_alias_cannot_respond_to_pending_request(tmp_path, monkeypatch):
+    with client_for(tmp_path, monkeypatch) as client:
+        payer, payee = _setup_aliases(client)
+        request = client.post(
+            "/v1/sovereign/requests-to-pay",
+            headers={"Idempotency-Key": "rtp-suspended-actor"},
+            json={
+                "payee_alias": payee["alias"],
+                "payer_alias": payer["alias"],
+                "amount_minor": 450,
+                "currency": "USD",
+                "reference": "invoice-suspended",
+            },
+        ).json()
+
+        activated = client.post(
+            f"/v1/sovereign/participants/{payer['participant_id']}/status",
+            json={"status": "active", "evidence_ref": "sandbox-activate"},
+        )
+        assert activated.status_code == 200
+        suspended = client.post(
+            f"/v1/sovereign/participants/{payer['participant_id']}/status",
+            json={"status": "suspended", "evidence_ref": "sandbox-suspend"},
+        )
+        assert suspended.status_code == 200
+
+        response = client.post(
+            f"/v1/sovereign/requests-to-pay/{request['id']}/response",
+            json={"decision": "accepted", "actor_alias": payer["alias"]},
+        )
+        assert response.status_code == 400
