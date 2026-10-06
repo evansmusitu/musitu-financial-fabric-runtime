@@ -21,7 +21,7 @@ from .reconciliation import reconcile_monetary_truth
 from .security import verify_hmac
 from .service import PaymentError, create_agent_mandate, create_agent_payment, create_identity, create_merchant, create_payment_intent, get_agent_mandate, get_payment, reconcile, register_webhook_event, settle_payment
 from .settlement import ProviderSettlementError, provider_fail, provider_succeed
-from .sovereign import SovereignError, create_qr_record, create_scheme_participant, register_payment_alias, resolve_payment_alias, resolve_qr_record, set_participant_status
+from .sovereign import SovereignError, create_qr_record, create_request_to_pay, create_scheme_participant, register_payment_alias, resolve_payment_alias, resolve_qr_record, respond_request_to_pay, set_participant_status
 
 
 @asynccontextmanager
@@ -70,6 +70,19 @@ class SovereignQrCreate(BaseModel):
     currency: str = Field(min_length=3, max_length=3)
     amount_minor: int | None = None
     expires_at: str | None = None
+
+
+class SovereignRequestToPayCreate(BaseModel):
+    payee_alias: str = Field(min_length=1, max_length=256)
+    payer_alias: str = Field(min_length=1, max_length=256)
+    amount_minor: int
+    currency: str = Field(min_length=3, max_length=3)
+    reference: str = Field(min_length=1, max_length=512)
+
+
+class SovereignRequestToPayResponse(BaseModel):
+    decision: str = Field(min_length=7, max_length=9)
+    actor_alias: str = Field(min_length=1, max_length=256)
 
 
 class MerchantReview(BaseModel):
@@ -343,6 +356,52 @@ async def sovereign_qr_get(qr_id: str, nonce: str, request: Request):
     if not record:
         raise HTTPException(404, "QR record not found")
     return record
+
+
+@app.post("/v1/sovereign/requests-to-pay")
+async def sovereign_request_to_pay_create(
+    payload: SovereignRequestToPayCreate,
+    request: Request,
+    idempotency_key: str = Header(alias="Idempotency-Key"),
+):
+    await _require_resource_authorization(request, {
+        "type": "sovereign_request_to_pay",
+        "action": "create",
+        "payee_alias": payload.payee_alias.lower(),
+        "payer_alias": payload.payer_alias.lower(),
+        "amount_minor": payload.amount_minor,
+        "currency": payload.currency.upper(),
+    })
+    try:
+        return create_request_to_pay(
+            payload.payee_alias,
+            payload.payer_alias,
+            payload.amount_minor,
+            payload.currency,
+            payload.reference,
+            idempotency_key,
+        )
+    except SovereignError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/v1/sovereign/requests-to-pay/{request_id}/response")
+async def sovereign_request_to_pay_response(
+    request_id: str,
+    payload: SovereignRequestToPayResponse,
+    request: Request,
+):
+    await _require_resource_authorization(request, {
+        "type": "sovereign_request_to_pay",
+        "id": request_id,
+        "action": "respond",
+        "decision": payload.decision.lower(),
+        "actor_alias": payload.actor_alias.lower(),
+    })
+    try:
+        return respond_request_to_pay(request_id, payload.decision, payload.actor_alias)
+    except SovereignError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @app.post("/v1/merchants")
