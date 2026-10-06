@@ -17,6 +17,34 @@ class SovereignError(RuntimeError):
 PARTICIPANT_TYPES = {"bank", "mobile_money", "fintech", "government", "switch", "psp"}
 ALIAS_TYPES = {"phone", "email", "vpa", "merchant", "account"}
 
+_SOVEREIGN_CAPABILITIES = (
+    {
+        "key": "sovereign-directory",
+        "name": "Sovereign Participant and Alias Directory",
+        "phase": "reference",
+        "production_enabled": False,
+        "moves_funds": False,
+    },
+    {
+        "key": "sovereign-qr",
+        "name": "Sovereign QR Repository",
+        "phase": "reference",
+        "production_enabled": False,
+        "moves_funds": False,
+    },
+    {
+        "key": "request-to-pay",
+        "name": "Sovereign Request to Pay",
+        "phase": "reference",
+        "production_enabled": False,
+        "moves_funds": False,
+    },
+)
+
+
+def sovereign_capabilities() -> list[dict]:
+    return [dict(item) for item in _SOVEREIGN_CAPABILITIES]
+
 PARTICIPANT_TRANSITIONS = {
     "pending_review": {"active", "rejected"},
     "sandbox": {"active", "rejected"},
