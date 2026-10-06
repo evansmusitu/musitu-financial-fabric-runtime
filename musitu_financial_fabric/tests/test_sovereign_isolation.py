@@ -21,6 +21,7 @@ def test_sovereign_capability_manifest_is_reference_only():
         "sovereign-qr",
         "request-to-pay",
         "zimbabwe-qr-profile",
+        "participant-certification",
     }
     assert all(item["phase"] == "reference" for item in capabilities)
     assert all(item["production_enabled"] is False for item in capabilities)
