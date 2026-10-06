@@ -618,8 +618,8 @@ def open_settlement_cycle(profile_key: str, cycle_ref: str, currency: str) -> di
         conn.execute("BEGIN IMMEDIATE")
         try:
             existing = conn.execute(
-                "SELECT id FROM scheme_settlement_cycles WHERE cycle_ref=?",
-                (cycle_ref,),
+                "SELECT id FROM scheme_settlement_cycles WHERE profile_key=? AND cycle_ref=?",
+                (profile_key, cycle_ref),
             ).fetchone()
             if existing:
                 raise SovereignError("settlement cycle reference already exists")
@@ -697,8 +697,8 @@ def record_clearing_obligation(
         conn.execute("BEGIN IMMEDIATE")
         try:
             existing = conn.execute(
-                "SELECT * FROM scheme_clearing_obligations WHERE external_ref=?",
-                (external_ref,),
+                "SELECT * FROM scheme_clearing_obligations WHERE cycle_id=? AND external_ref=?",
+                (cycle_id, external_ref),
             ).fetchone()
             if existing:
                 existing = dict(existing)
