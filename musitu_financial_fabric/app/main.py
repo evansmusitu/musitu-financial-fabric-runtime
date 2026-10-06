@@ -21,7 +21,7 @@ from .reconciliation import reconcile_monetary_truth
 from .security import verify_hmac
 from .service import PaymentError, create_agent_mandate, create_agent_payment, create_identity, create_merchant, create_payment_intent, get_agent_mandate, get_payment, reconcile, register_webhook_event, settle_payment
 from .settlement import ProviderSettlementError, provider_fail, provider_succeed
-from .sovereign import SovereignError, create_qr_record, create_request_to_pay, create_scheme_participant, register_payment_alias, resolve_payment_alias, resolve_qr_record, respond_request_to_pay, set_participant_status
+from .sovereign import SovereignError, create_qr_record, create_request_to_pay, create_scheme_participant, register_payment_alias, resolve_payment_alias, resolve_qr_record, respond_request_to_pay, set_participant_status, sovereign_capabilities
 
 
 @asynccontextmanager
@@ -265,6 +265,12 @@ async def mandate_get(mandate_id: str, request: Request):
     if not data:
         raise HTTPException(404, "mandate not found")
     return data
+
+
+@app.get("/v1/sovereign/capabilities")
+async def sovereign_capabilities_get(request: Request):
+    await _require_resource_authorization(request, {"type": "sovereign_capabilities", "action": "read"})
+    return {"phase": "reference", "capabilities": sovereign_capabilities()}
 
 
 @app.post("/v1/sovereign/participants")
