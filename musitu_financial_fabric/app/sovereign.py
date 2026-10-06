@@ -351,6 +351,223 @@ def register_qr_scheme_profile(
     }
 
 
+def _certification_case_public(row: dict) -> dict:
+    return {
+        "id": row["id"],
+        "participant_id": row["participant_id"],
+        "scheme_profile": row["scheme_profile"],
+        "evidence_ref": row["evidence_ref"],
+        "required_checks": sorted(json.loads(row["required_checks_json"])),
+        "status": row["status"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def create_certification_case(
+    participant_id: str,
+    scheme_profile: str,
+    evidence_ref: str,
+    required_checks: list[str],
+) -> dict:
+    participant_id = str(participant_id or "").strip()
+    scheme_profile = str(scheme_profile or "").strip().lower()
+    evidence_ref = str(evidence_ref or "").strip()
+    required = sorted({str(item or "").strip().lower() for item in required_checks if str(item or "").strip()})
+    if not participant_id:
+        raise SovereignError("scheme participant is required")
+    if not scheme_profile:
+        raise SovereignError("certification scheme profile is required")
+    if not evidence_ref:
+        raise SovereignError("certification evidence reference is required")
+    if not required:
+        raise SovereignError("at least one mandatory certification check is required")
+
+    case_id = f"crt_{uuid.uuid4().hex}"
+    ts = now_iso()
+    required_json = json.dumps(required, separators=(",", ":"))
+    with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            participant = conn.execute(
+                "SELECT * FROM scheme_participants WHERE id=?",
+                (participant_id,),
+            ).fetchone()
+            if not participant:
+                raise SovereignError("scheme participant not found")
+            if participant["status"] == "rejected":
+                raise SovereignError("rejected participant cannot enter certification")
+            conn.execute(
+                """INSERT INTO scheme_certification_cases
+                   (id,participant_id,scheme_profile,evidence_ref,required_checks_json,status,created_at,updated_at)
+                   VALUES (?,?,?,?,?,?,?,?)""",
+                (case_id, participant_id, scheme_profile, evidence_ref, required_json, "open", ts, ts),
+            )
+            append_audit(
+                "sovereign.certification_case_created",
+                case_id,
+                {
+                    "participant_id": participant_id,
+                    "scheme_profile": scheme_profile,
+                    "evidence_ref": evidence_ref,
+                    "required_checks": required,
+                },
+                conn=conn,
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
+    return {
+        "id": case_id,
+        "participant_id": participant_id,
+        "scheme_profile": scheme_profile,
+        "evidence_ref": evidence_ref,
+        "required_checks": required,
+        "status": "open",
+        "created_at": ts,
+        "updated_at": ts,
+    }
+
+
+def record_certification_check(
+    case_id: str,
+    check_key: str,
+    result: str,
+    evidence_ref: str,
+    actor: str,
+) -> dict:
+    case_id = str(case_id or "").strip()
+    check_key = str(check_key or "").strip().lower()
+    result = str(result or "").strip().lower()
+    evidence_ref = str(evidence_ref or "").strip()
+    actor = str(actor or "").strip()
+    if result not in {"passed", "failed"}:
+        raise SovereignError("certification check result must be passed or failed")
+    if not check_key:
+        raise SovereignError("certification check key is required")
+    if not evidence_ref:
+        raise SovereignError("certification check evidence is required")
+    if not actor:
+        raise SovereignError("certification check actor is required")
+    payload = {"check_key": check_key, "result": result, "evidence_ref": evidence_ref, "actor": actor}
+    payload_hash = hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+    with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            case = conn.execute("SELECT * FROM scheme_certification_cases WHERE id=?", (case_id,)).fetchone()
+            if not case:
+                raise SovereignError("certification case not found")
+            if case["status"] != "open":
+                raise SovereignError("certification case is terminal")
+            required = set(json.loads(case["required_checks_json"]))
+            if check_key not in required:
+                raise SovereignError("certification check is not a required check")
+            existing = conn.execute(
+                "SELECT * FROM scheme_certification_checks WHERE case_id=? AND check_key=?",
+                (case_id, check_key),
+            ).fetchone()
+            if existing:
+                if existing["payload_hash"] != payload_hash:
+                    raise SovereignError("conflicting certification check replay")
+                conn.execute("COMMIT")
+                return dict(existing)
+            check_id = f"chk_{uuid.uuid4().hex}"
+            created_at = now_iso()
+            conn.execute(
+                """INSERT INTO scheme_certification_checks
+                   (id,case_id,check_key,result,evidence_ref,actor,payload_hash,created_at)
+                   VALUES (?,?,?,?,?,?,?,?)""",
+                (check_id, case_id, check_key, result, evidence_ref, actor, payload_hash, created_at),
+            )
+            append_audit(
+                "sovereign.certification_check_recorded",
+                check_id,
+                payload | {"case_id": case_id},
+                conn=conn,
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
+    return {
+        "id": check_id,
+        "case_id": case_id,
+        "check_key": check_key,
+        "result": result,
+        "evidence_ref": evidence_ref,
+        "actor": actor,
+        "payload_hash": payload_hash,
+        "created_at": created_at,
+    }
+
+
+def decide_certification(
+    case_id: str,
+    decision: str,
+    actor: str,
+    authorization_decision_id: str,
+) -> dict:
+    case_id = str(case_id or "").strip()
+    decision = str(decision or "").strip().lower()
+    actor = str(actor or "").strip()
+    authorization_decision_id = str(authorization_decision_id or "").strip()
+    if decision not in {"approved", "rejected"}:
+        raise SovereignError("unsupported certification decision")
+    if not actor:
+        raise SovereignError("certification decision actor is required")
+    if not authorization_decision_id:
+        raise SovereignError("certification authorization decision is required")
+
+    with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            case = conn.execute("SELECT * FROM scheme_certification_cases WHERE id=?", (case_id,)).fetchone()
+            if not case:
+                raise SovereignError("certification case not found")
+            if case["status"] != "open":
+                raise SovereignError("certification case is terminal")
+            if decision == "approved":
+                required = set(json.loads(case["required_checks_json"]))
+                checks = conn.execute(
+                    "SELECT check_key,result FROM scheme_certification_checks WHERE case_id=?",
+                    (case_id,),
+                ).fetchall()
+                passed = {row["check_key"] for row in checks if row["result"] == "passed"}
+                if passed != required:
+                    raise SovereignError("all mandatory certification checks must pass before approval")
+            ts = now_iso()
+            updated = conn.execute(
+                "UPDATE scheme_certification_cases SET status=?,updated_at=? WHERE id=? AND status='open'",
+                (decision, ts, case_id),
+            )
+            if updated.rowcount != 1:
+                raise SovereignError("certification case changed before decision commit")
+            append_audit(
+                "sovereign.certification_decided",
+                case_id,
+                {
+                    "decision": decision,
+                    "actor": actor,
+                    "authorization_decision_id": authorization_decision_id,
+                },
+                conn=conn,
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM scheme_certification_cases WHERE id=?", (case_id,)).fetchone()
+    if not row:
+        raise SovereignError("certification case disappeared after decision")
+    return _certification_case_public(dict(row))
+
+
 def _currency_code(value: str) -> str:
     currency = str(value or "").strip().upper()
     if len(currency) != 3 or not currency.isalpha():
