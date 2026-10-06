@@ -67,6 +67,13 @@ _SOVEREIGN_CAPABILITIES = (
         "production_enabled": False,
         "moves_funds": False,
     },
+    {
+        "key": "scheme-exceptions",
+        "name": "Sovereign Refund Reversal and Dispute Lifecycle",
+        "phase": "reference",
+        "production_enabled": False,
+        "moves_funds": False,
+    },
 )
 
 
