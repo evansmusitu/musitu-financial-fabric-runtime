@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timezone
 
 from .audit import append_audit, now_iso
 from .config import settings
@@ -230,3 +231,125 @@ def resolve_payment_alias(alias: str) -> dict | None:
     if not row or row["participant_status"] not in {"active", "sandbox"}:
         return None
     return dict(row)
+
+
+def _currency_code(value: str) -> str:
+    currency = str(value or "").strip().upper()
+    if len(currency) != 3 or not currency.isalpha():
+        raise SovereignError("currency must be an explicit three-letter code")
+    return currency
+
+
+def _expiry(value: str | None) -> datetime | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise SovereignError("QR expiry must be an ISO 8601 timestamp") from exc
+    if parsed.tzinfo is None:
+        raise SovereignError("QR expiry must include a timezone")
+    return parsed.astimezone(timezone.utc)
+
+
+def create_qr_record(
+    participant_id: str,
+    merchant_ref: str,
+    alias: str,
+    currency: str,
+    *,
+    amount_minor: int | None = None,
+    expires_at: str | None = None,
+) -> dict:
+    participant_id = str(participant_id or "").strip()
+    merchant_ref = str(merchant_ref or "").strip()
+    normalized_alias = str(alias or "").strip().lower()
+    currency = _currency_code(currency)
+    if not participant_id:
+        raise SovereignError("scheme participant is required")
+    if not merchant_ref:
+        raise SovereignError("merchant reference is required")
+    if amount_minor is not None and int(amount_minor) <= 0:
+        raise SovereignError("dynamic QR amount must be positive")
+    expiry = _expiry(expires_at)
+
+    resolved = resolve_payment_alias(normalized_alias)
+    if not resolved:
+        raise SovereignError("QR alias is not resolvable")
+    if resolved["participant_id"] != participant_id:
+        raise SovereignError("QR alias does not belong to participant")
+
+    qr_id = f"sqr_{uuid.uuid4().hex}"
+    nonce = uuid.uuid4().hex
+    created_at = now_iso()
+    stored_expiry = expiry.isoformat() if expiry is not None else None
+    with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            conn.execute(
+                """INSERT INTO scheme_qr_records
+                   (id,participant_id,merchant_ref,alias,currency,amount_minor,nonce,expires_at,created_at)
+                   VALUES (?,?,?,?,?,?,?,?,?)""",
+                (
+                    qr_id,
+                    participant_id,
+                    merchant_ref,
+                    normalized_alias,
+                    currency,
+                    int(amount_minor) if amount_minor is not None else None,
+                    nonce,
+                    stored_expiry,
+                    created_at,
+                ),
+            )
+            append_audit(
+                "sovereign.qr_created",
+                qr_id,
+                {
+                    "participant_id": participant_id,
+                    "merchant_ref": merchant_ref,
+                    "alias": normalized_alias,
+                    "currency": currency,
+                    "amount_minor": int(amount_minor) if amount_minor is not None else None,
+                    "expires_at": stored_expiry,
+                },
+                conn=conn,
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
+    return {
+        "id": qr_id,
+        "participant_id": participant_id,
+        "merchant_ref": merchant_ref,
+        "alias": normalized_alias,
+        "currency": currency,
+        "amount_minor": int(amount_minor) if amount_minor is not None else None,
+        "nonce": nonce,
+        "expires_at": stored_expiry,
+        "created_at": created_at,
+    }
+
+
+def resolve_qr_record(qr_id: str, nonce: str) -> dict | None:
+    qr_id = str(qr_id or "").strip()
+    nonce = str(nonce or "").strip()
+    if not qr_id or not nonce:
+        return None
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM scheme_qr_records WHERE id=? AND nonce=?",
+            (qr_id, nonce),
+        ).fetchone()
+    if not row:
+        return None
+    record = dict(row)
+    expiry = _expiry(record.get("expires_at"))
+    if expiry is not None and datetime.now(timezone.utc) >= expiry:
+        return None
+    if resolve_payment_alias(record["alias"]) is None:
+        return None
+    return record
