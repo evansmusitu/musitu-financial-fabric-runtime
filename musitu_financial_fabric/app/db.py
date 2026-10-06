@@ -35,6 +35,8 @@ CREATE INDEX IF NOT EXISTS ix_scheme_qr_records_participant ON scheme_qr_records
 CREATE TABLE IF NOT EXISTS request_to_pay (id TEXT PRIMARY KEY,idempotency_key TEXT NOT NULL UNIQUE,request_hash TEXT NOT NULL,payee_alias TEXT NOT NULL,payer_alias TEXT NOT NULL,amount_minor INTEGER NOT NULL,currency TEXT NOT NULL,reference TEXT NOT NULL,status TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS ix_request_to_pay_payer_status ON request_to_pay(payer_alias,status);
 CREATE INDEX IF NOT EXISTS ix_request_to_pay_payee_status ON request_to_pay(payee_alias,status);
+CREATE TABLE IF NOT EXISTS scheme_certification_cases (id TEXT PRIMARY KEY,participant_id TEXT NOT NULL REFERENCES scheme_participants(id),scheme_profile TEXT NOT NULL,evidence_ref TEXT NOT NULL,required_checks_json TEXT NOT NULL,status TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS scheme_certification_checks (id TEXT PRIMARY KEY,case_id TEXT NOT NULL REFERENCES scheme_certification_cases(id),check_key TEXT NOT NULL,result TEXT NOT NULL,evidence_ref TEXT NOT NULL,actor TEXT NOT NULL,payload_hash TEXT NOT NULL,created_at TEXT NOT NULL,UNIQUE(case_id,check_key));
 """
 
 POSTGRES_SCHEMA = """
@@ -62,6 +64,8 @@ CREATE INDEX IF NOT EXISTS ix_scheme_qr_records_participant ON scheme_qr_records
 CREATE TABLE IF NOT EXISTS request_to_pay (id TEXT PRIMARY KEY,idempotency_key TEXT NOT NULL UNIQUE,request_hash TEXT NOT NULL,payee_alias TEXT NOT NULL,payer_alias TEXT NOT NULL,amount_minor BIGINT NOT NULL,currency TEXT NOT NULL,reference TEXT NOT NULL,status TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS ix_request_to_pay_payer_status ON request_to_pay(payer_alias,status);
 CREATE INDEX IF NOT EXISTS ix_request_to_pay_payee_status ON request_to_pay(payee_alias,status);
+CREATE TABLE IF NOT EXISTS scheme_certification_cases (id TEXT PRIMARY KEY,participant_id TEXT NOT NULL REFERENCES scheme_participants(id),scheme_profile TEXT NOT NULL,evidence_ref TEXT NOT NULL,required_checks_json TEXT NOT NULL,status TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS scheme_certification_checks (id TEXT PRIMARY KEY,case_id TEXT NOT NULL REFERENCES scheme_certification_cases(id),check_key TEXT NOT NULL,result TEXT NOT NULL,evidence_ref TEXT NOT NULL,actor TEXT NOT NULL,payload_hash TEXT NOT NULL,created_at TEXT NOT NULL,UNIQUE(case_id,check_key));
 """
 
 
