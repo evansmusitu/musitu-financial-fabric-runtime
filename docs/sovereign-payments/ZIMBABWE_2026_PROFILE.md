@@ -82,3 +82,22 @@ Before this profile can progress beyond reference status, MUSITU requires author
 ## Safety invariant
 
 A successful unit test, CI run, reference QR creation, or normalized tag value is engineering evidence only. It cannot create regulatory approval, National Switch registration, EMVCo certification, provider contracts, settlement authority, or permission to move live funds.
+
+
+## External dependency evidence gate
+
+The reference implementation now exposes an explicit country-profile dependency gate for `zimbabwe-2026`.
+
+The gate begins fail-closed with these dependencies unconfigured:
+
+- `national_switch_message_interface`
+- `authoritative_mai_allocation`
+- `emvco_conformance`
+- `participant_certification_pack`
+- `settlement_finality_rules`
+
+Each dependency can be recorded as `unconfigured`, `reference`, or `externally_verified`. A status of `externally_verified` requires a non-empty external evidence reference, an actor, and an authorization decision ID, and every change is recorded in the chained audit log.
+
+Reference or draft material does not satisfy the gate. The gate reports a blocker for every dependency that is not `externally_verified`.
+
+Even when all external dependencies have evidence, the gate returns `production_enabled=false`. External evidence readiness cannot self-enable a production rail, bypass Financial Fabric's existing live-funds controls, or create RBZ/Zimswitch/EMVCo authorization.
