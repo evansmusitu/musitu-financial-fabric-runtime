@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import uuid
 from datetime import datetime, timezone
 
@@ -353,3 +355,210 @@ def resolve_qr_record(qr_id: str, nonce: str) -> dict | None:
     if resolve_payment_alias(record["alias"]) is None:
         return None
     return record
+
+
+def _request_hash(
+    *,
+    payee_alias: str,
+    payer_alias: str,
+    amount_minor: int,
+    currency: str,
+    reference: str,
+) -> str:
+    payload = {
+        "payee_alias": payee_alias,
+        "payer_alias": payer_alias,
+        "amount_minor": int(amount_minor),
+        "currency": currency,
+        "reference": reference,
+    }
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _request_to_pay_public(row: dict) -> dict:
+    result = {
+        "id": row["id"],
+        "payee_alias": row["payee_alias"],
+        "payer_alias": row["payer_alias"],
+        "amount_minor": int(row["amount_minor"]),
+        "currency": row["currency"],
+        "reference": row["reference"],
+        "status": row["status"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+    if row["status"] == "accepted":
+        result["payment_instruction"] = {
+            "request_to_pay_id": row["id"],
+            "payer_alias": row["payer_alias"],
+            "payee_alias": row["payee_alias"],
+            "amount_minor": int(row["amount_minor"]),
+            "currency": row["currency"],
+            "reference": row["reference"],
+        }
+    return result
+
+
+def create_request_to_pay(
+    payee_alias: str,
+    payer_alias: str,
+    amount_minor: int,
+    currency: str,
+    reference: str,
+    idempotency_key: str,
+) -> dict:
+    payee_alias = str(payee_alias or "").strip().lower()
+    payer_alias = str(payer_alias or "").strip().lower()
+    reference = str(reference or "").strip()
+    idempotency_key = str(idempotency_key or "").strip()
+    currency = _currency_code(currency)
+    amount_minor = int(amount_minor)
+
+    if amount_minor <= 0:
+        raise SovereignError("request-to-pay amount must be positive")
+    if not reference:
+        raise SovereignError("request-to-pay reference is required")
+    if not idempotency_key:
+        raise SovereignError("request-to-pay idempotency key is required")
+    if resolve_payment_alias(payee_alias) is None:
+        raise SovereignError("request-to-pay payee alias is not resolvable")
+    if resolve_payment_alias(payer_alias) is None:
+        raise SovereignError("request-to-pay payer alias is not resolvable")
+
+    request_hash = _request_hash(
+        payee_alias=payee_alias,
+        payer_alias=payer_alias,
+        amount_minor=amount_minor,
+        currency=currency,
+        reference=reference,
+    )
+    request_id = f"rtp_{uuid.uuid4().hex}"
+    ts = now_iso()
+
+    with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            existing = conn.execute(
+                "SELECT * FROM request_to_pay WHERE idempotency_key=?",
+                (idempotency_key,),
+            ).fetchone()
+            if existing:
+                existing = dict(existing)
+                if existing["request_hash"] != request_hash:
+                    raise SovereignError("request-to-pay idempotency key conflicts with a different request")
+                conn.execute("COMMIT")
+                return _request_to_pay_public(existing)
+
+            conn.execute(
+                """INSERT INTO request_to_pay
+                   (id,idempotency_key,request_hash,payee_alias,payer_alias,amount_minor,currency,reference,status,created_at,updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    request_id,
+                    idempotency_key,
+                    request_hash,
+                    payee_alias,
+                    payer_alias,
+                    amount_minor,
+                    currency,
+                    reference,
+                    "pending",
+                    ts,
+                    ts,
+                ),
+            )
+            append_audit(
+                "sovereign.request_to_pay_created",
+                request_id,
+                {
+                    "payee_alias": payee_alias,
+                    "payer_alias": payer_alias,
+                    "amount_minor": amount_minor,
+                    "currency": currency,
+                    "reference": reference,
+                    "idempotency_key": idempotency_key,
+                },
+                conn=conn,
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
+
+    return _request_to_pay_public({
+        "id": request_id,
+        "payee_alias": payee_alias,
+        "payer_alias": payer_alias,
+        "amount_minor": amount_minor,
+        "currency": currency,
+        "reference": reference,
+        "status": "pending",
+        "created_at": ts,
+        "updated_at": ts,
+    })
+
+
+def respond_request_to_pay(request_id: str, decision: str, actor_alias: str) -> dict:
+    request_id = str(request_id or "").strip()
+    decision = str(decision or "").strip().lower()
+    actor_alias = str(actor_alias or "").strip().lower()
+    if decision not in {"accepted", "declined", "cancelled"}:
+        raise SovereignError("unsupported request-to-pay decision")
+    if not actor_alias:
+        raise SovereignError("request-to-pay actor alias is required")
+
+    with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = conn.execute(
+                "SELECT * FROM request_to_pay WHERE id=?",
+                (request_id,),
+            ).fetchone()
+            if not row:
+                raise SovereignError("request-to-pay not found")
+            current = dict(row)
+            if current["status"] != "pending":
+                raise SovereignError("request-to-pay is already terminal")
+
+            if decision in {"accepted", "declined"}:
+                expected_actor = current["payer_alias"]
+                if actor_alias != expected_actor:
+                    raise SovereignError("only payer alias may accept or decline request-to-pay")
+            else:
+                expected_actor = current["payee_alias"]
+                if actor_alias != expected_actor:
+                    raise SovereignError("only payee alias may cancel request-to-pay")
+
+            ts = now_iso()
+            updated = conn.execute(
+                "UPDATE request_to_pay SET status=?,updated_at=? WHERE id=? AND status='pending'",
+                (decision, ts, request_id),
+            )
+            if updated.rowcount != 1:
+                raise SovereignError("request-to-pay state changed before response commit")
+            append_audit(
+                "sovereign.request_to_pay_responded",
+                request_id,
+                {
+                    "decision": decision,
+                    "actor_alias": actor_alias,
+                    "previous_status": "pending",
+                },
+                conn=conn,
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
+
+    with connect() as conn:
+        result = conn.execute(
+            "SELECT * FROM request_to_pay WHERE id=?",
+            (request_id,),
+        ).fetchone()
+    if not result:
+        raise SovereignError("request-to-pay disappeared after response")
+    return _request_to_pay_public(dict(result))
