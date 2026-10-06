@@ -582,6 +582,293 @@ def decide_certification(
     return _certification_case_public(dict(row))
 
 
+def _clearing_cycle_public(row: dict) -> dict:
+    return {
+        "id": row["id"],
+        "profile_key": row["profile_key"],
+        "cycle_ref": row["cycle_ref"],
+        "currency": row["currency"],
+        "status": row["status"],
+        "settlement_evidence_ref": row["settlement_evidence_ref"],
+        "external_settlement_verified": bool(row["external_settlement_verified"]),
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def open_settlement_cycle(profile_key: str, cycle_ref: str, currency: str) -> dict:
+    profile_key = str(profile_key or "").strip().lower()
+    cycle_ref = str(cycle_ref or "").strip()
+    currency = _currency_code(currency)
+    if not profile_key:
+        raise SovereignError("settlement profile key is required")
+    if not cycle_ref:
+        raise SovereignError("settlement cycle reference is required")
+
+    cycle_id = f"cyc_{uuid.uuid4().hex}"
+    ts = now_iso()
+    with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            existing = conn.execute(
+                "SELECT id FROM scheme_settlement_cycles WHERE cycle_ref=?",
+                (cycle_ref,),
+            ).fetchone()
+            if existing:
+                raise SovereignError("settlement cycle reference already exists")
+            conn.execute(
+                """INSERT INTO scheme_settlement_cycles
+                   (id,profile_key,cycle_ref,currency,status,settlement_evidence_ref,
+                    external_settlement_verified,created_at,updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?)""",
+                (cycle_id, profile_key, cycle_ref, currency, "open", None, False, ts, ts),
+            )
+            append_audit(
+                "sovereign.settlement_cycle_opened",
+                cycle_id,
+                {
+                    "profile_key": profile_key,
+                    "cycle_ref": cycle_ref,
+                    "currency": currency,
+                    "external_settlement_verified": False,
+                },
+                conn=conn,
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
+    return {
+        "id": cycle_id,
+        "profile_key": profile_key,
+        "cycle_ref": cycle_ref,
+        "currency": currency,
+        "status": "open",
+        "settlement_evidence_ref": None,
+        "external_settlement_verified": False,
+        "created_at": ts,
+        "updated_at": ts,
+    }
+
+
+def record_clearing_obligation(
+    cycle_id: str,
+    debtor_participant_id: str,
+    creditor_participant_id: str,
+    amount_minor: int,
+    external_ref: str,
+) -> dict:
+    cycle_id = str(cycle_id or "").strip()
+    debtor_participant_id = str(debtor_participant_id or "").strip()
+    creditor_participant_id = str(creditor_participant_id or "").strip()
+    external_ref = str(external_ref or "").strip()
+    amount_minor = int(amount_minor)
+    if not cycle_id:
+        raise SovereignError("settlement cycle is required")
+    if not debtor_participant_id or not creditor_participant_id:
+        raise SovereignError("debtor and creditor participants are required")
+    if debtor_participant_id == creditor_participant_id:
+        raise SovereignError("clearing obligation requires distinct debtor and creditor participants")
+    if amount_minor <= 0:
+        raise SovereignError("clearing obligation amount must be positive")
+    if not external_ref:
+        raise SovereignError("clearing obligation external reference is required")
+
+    payload = {
+        "cycle_id": cycle_id,
+        "debtor_participant_id": debtor_participant_id,
+        "creditor_participant_id": creditor_participant_id,
+        "amount_minor": amount_minor,
+        "external_ref": external_ref,
+    }
+    payload_hash = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+    with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            existing = conn.execute(
+                "SELECT * FROM scheme_clearing_obligations WHERE external_ref=?",
+                (external_ref,),
+            ).fetchone()
+            if existing:
+                existing = dict(existing)
+                if existing["payload_hash"] != payload_hash:
+                    raise SovereignError("clearing obligation external reference conflicts with a different obligation")
+                conn.execute("COMMIT")
+                return existing
+
+            cycle = conn.execute(
+                "SELECT * FROM scheme_settlement_cycles WHERE id=?",
+                (cycle_id,),
+            ).fetchone()
+            if not cycle:
+                raise SovereignError("settlement cycle not found")
+            if cycle["status"] != "open":
+                raise SovereignError("settlement cycle is closed")
+
+            participants = {}
+            for participant_id in (debtor_participant_id, creditor_participant_id):
+                participant = conn.execute(
+                    "SELECT id,status FROM scheme_participants WHERE id=?",
+                    (participant_id,),
+                ).fetchone()
+                if not participant:
+                    raise SovereignError("clearing participant not found")
+                if participant["status"] not in {"active", "sandbox"}:
+                    raise SovereignError("clearing participant is not active")
+                participants[participant_id] = participant
+
+            obligation_id = f"obl_{uuid.uuid4().hex}"
+            created_at = now_iso()
+            conn.execute(
+                """INSERT INTO scheme_clearing_obligations
+                   (id,cycle_id,debtor_participant_id,creditor_participant_id,
+                    amount_minor,external_ref,payload_hash,created_at)
+                   VALUES (?,?,?,?,?,?,?,?)""",
+                (
+                    obligation_id,
+                    cycle_id,
+                    debtor_participant_id,
+                    creditor_participant_id,
+                    amount_minor,
+                    external_ref,
+                    payload_hash,
+                    created_at,
+                ),
+            )
+            append_audit(
+                "sovereign.clearing_obligation_recorded",
+                obligation_id,
+                payload,
+                conn=conn,
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
+    return {
+        "id": obligation_id,
+        **payload,
+        "payload_hash": payload_hash,
+        "created_at": created_at,
+    }
+
+
+def calculate_net_positions(cycle_id: str) -> dict:
+    cycle_id = str(cycle_id or "").strip()
+    if not cycle_id:
+        raise SovereignError("settlement cycle is required")
+    with connect() as conn:
+        cycle = conn.execute(
+            "SELECT * FROM scheme_settlement_cycles WHERE id=?",
+            (cycle_id,),
+        ).fetchone()
+        if not cycle:
+            raise SovereignError("settlement cycle not found")
+        rows = conn.execute(
+            """SELECT debtor_participant_id,creditor_participant_id,amount_minor
+               FROM scheme_clearing_obligations WHERE cycle_id=? ORDER BY created_at,id""",
+            (cycle_id,),
+        ).fetchall()
+
+    positions: dict[str, int] = {}
+    for row in rows:
+        debtor = str(row["debtor_participant_id"])
+        creditor = str(row["creditor_participant_id"])
+        amount = int(row["amount_minor"])
+        positions[debtor] = positions.get(debtor, 0) - amount
+        positions[creditor] = positions.get(creditor, 0) + amount
+
+    total = sum(positions.values())
+    return {
+        "cycle_id": cycle_id,
+        "currency": cycle["currency"],
+        "obligation_count": len(rows),
+        "positions_minor": dict(sorted(positions.items())),
+        "sum_minor": total,
+        "balanced": total == 0,
+    }
+
+
+def close_settlement_cycle(
+    cycle_id: str,
+    evidence_ref: str,
+    actor: str,
+    authorization_decision_id: str,
+) -> dict:
+    cycle_id = str(cycle_id or "").strip()
+    evidence_ref = str(evidence_ref or "").strip()
+    actor = str(actor or "").strip()
+    authorization_decision_id = str(authorization_decision_id or "").strip()
+    if not cycle_id:
+        raise SovereignError("settlement cycle is required")
+    if not evidence_ref:
+        raise SovereignError("settlement closure requires external evidence reference")
+    if not actor:
+        raise SovereignError("settlement closure actor is required")
+    if not authorization_decision_id:
+        raise SovereignError("settlement closure authorization decision is required")
+
+    positions = calculate_net_positions(cycle_id)
+    if not positions["balanced"]:
+        raise SovereignError("settlement cycle net positions are inconsistent")
+    if positions["obligation_count"] == 0:
+        raise SovereignError("settlement cycle requires at least one clearing obligation")
+
+    with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            cycle = conn.execute(
+                "SELECT * FROM scheme_settlement_cycles WHERE id=?",
+                (cycle_id,),
+            ).fetchone()
+            if not cycle:
+                raise SovereignError("settlement cycle not found")
+            if cycle["status"] != "open":
+                raise SovereignError("settlement cycle is closed")
+            ts = now_iso()
+            updated = conn.execute(
+                """UPDATE scheme_settlement_cycles
+                   SET status='closed',settlement_evidence_ref=?,
+                       external_settlement_verified=?,updated_at=?
+                   WHERE id=? AND status='open'""",
+                (evidence_ref, False, ts, cycle_id),
+            )
+            if updated.rowcount != 1:
+                raise SovereignError("settlement cycle changed before closure commit")
+            append_audit(
+                "sovereign.settlement_cycle_closed",
+                cycle_id,
+                {
+                    "evidence_ref": evidence_ref,
+                    "actor": actor,
+                    "authorization_decision_id": authorization_decision_id,
+                    "obligation_count": positions["obligation_count"],
+                    "net_sum_minor": positions["sum_minor"],
+                    "external_settlement_verified": False,
+                },
+                conn=conn,
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
+
+    with connect() as conn:
+        result = conn.execute(
+            "SELECT * FROM scheme_settlement_cycles WHERE id=?",
+            (cycle_id,),
+        ).fetchone()
+    if not result:
+        raise SovereignError("settlement cycle disappeared after closure")
+    return _clearing_cycle_public(dict(result))
+
+
 def _currency_code(value: str) -> str:
     currency = str(value or "").strip().upper()
     if len(currency) != 3 or not currency.isalpha():
