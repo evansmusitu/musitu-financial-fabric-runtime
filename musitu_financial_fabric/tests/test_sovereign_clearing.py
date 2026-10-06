@@ -98,6 +98,8 @@ def test_cycle_currency_and_reference_validation(tmp_path):
     assert first["currency"] == "USD"
     with pytest.raises(sovereign.SovereignError, match="cycle reference"):
         sovereign.open_settlement_cycle("generic", "unique-cycle", "USD")
+    other_profile = sovereign.open_settlement_cycle("another-scheme", "unique-cycle", "USD")
+    assert other_profile["profile_key"] == "another-scheme"
 
 
 class _FakeConnection:
@@ -112,15 +114,15 @@ class _FakeConnection:
 def test_postgres_clearing_external_ref_lookup_takes_per_ref_lock_first():
     raw = _FakeConnection()
     conn = _PostgresConnection(raw)
-    query = "SELECT * FROM scheme_clearing_obligations WHERE external_ref=?"
+    query = "SELECT * FROM scheme_clearing_obligations WHERE cycle_id=? AND external_ref=?"
 
-    conn.execute(query, ("clear-ref-1",))
+    conn.execute(query, ("cycle-1", "clear-ref-1"))
 
     assert raw.calls[0] == (
         "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
-        ("clear-ref-1",),
+        ("cycle-1:clear-ref-1",),
     )
     assert raw.calls[1] == (
-        "SELECT * FROM scheme_clearing_obligations WHERE external_ref=%s",
-        ("clear-ref-1",),
+        "SELECT * FROM scheme_clearing_obligations WHERE cycle_id=%s AND external_ref=%s",
+        ("cycle-1", "clear-ref-1"),
     )
