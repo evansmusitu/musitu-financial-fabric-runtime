@@ -21,7 +21,7 @@ from .reconciliation import reconcile_monetary_truth
 from .security import verify_hmac
 from .service import PaymentError, create_agent_mandate, create_agent_payment, create_identity, create_merchant, create_payment_intent, get_agent_mandate, get_payment, reconcile, register_webhook_event, settle_payment
 from .settlement import ProviderSettlementError, provider_fail, provider_succeed
-from .sovereign import SovereignError, calculate_net_positions, close_settlement_cycle, create_certification_case, create_qr_record, create_request_to_pay, create_scheme_participant, decide_certification, open_settlement_cycle, record_certification_check, record_clearing_obligation, register_payment_alias, register_qr_scheme_profile, resolve_payment_alias, resolve_qr_record, respond_request_to_pay, set_participant_status, sovereign_capabilities
+from .sovereign import SovereignError, calculate_net_positions, close_settlement_cycle, create_certification_case, create_qr_record, create_request_to_pay, create_scheme_exception, create_scheme_participant, decide_certification, decide_scheme_exception, open_settlement_cycle, record_certification_check, record_clearing_obligation, record_exception_evidence, register_payment_alias, register_qr_scheme_profile, resolve_payment_alias, resolve_qr_record, respond_request_to_pay, set_participant_status, sovereign_capabilities
 
 
 @asynccontextmanager
@@ -78,6 +78,21 @@ class SovereignCertificationCheck(BaseModel):
 
 class SovereignCertificationDecision(BaseModel):
     decision: str = Field(min_length=8, max_length=8)
+
+
+class SovereignExceptionCreate(BaseModel):
+    transaction_ref: str = Field(min_length=1, max_length=256)
+    kind: str = Field(min_length=1, max_length=32)
+    claimant_participant_id: str = Field(min_length=1, max_length=96)
+    reason: str = Field(min_length=1, max_length=512)
+
+
+class SovereignExceptionEvidence(BaseModel):
+    evidence_ref: str = Field(min_length=1, max_length=512)
+
+
+class SovereignExceptionDecision(BaseModel):
+    decision: str = Field(min_length=8, max_length=9)
 
 
 class SovereignSettlementCycleCreate(BaseModel):
@@ -315,6 +330,71 @@ async def mandate_get(mandate_id: str, request: Request):
 async def sovereign_capabilities_get(request: Request):
     await _require_resource_authorization(request, {"type": "sovereign_capabilities", "action": "read"})
     return {"phase": "reference", "capabilities": sovereign_capabilities()}
+
+
+@app.post("/v1/sovereign/exceptions")
+async def sovereign_exception_create(
+    payload: SovereignExceptionCreate,
+    request: Request,
+    idempotency_key: str = Header(alias="Idempotency-Key"),
+):
+    await _require_resource_authorization(request, {
+        "type": "sovereign_scheme_exception",
+        "action": "create",
+        "transaction_ref": payload.transaction_ref,
+        "kind": payload.kind.lower(),
+        "claimant_participant_id": payload.claimant_participant_id,
+    })
+    try:
+        return create_scheme_exception(
+            payload.transaction_ref,
+            payload.kind,
+            payload.claimant_participant_id,
+            payload.reason,
+            idempotency_key,
+        )
+    except SovereignError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/v1/sovereign/exceptions/{exception_id}/evidence")
+async def sovereign_exception_evidence(
+    exception_id: str,
+    payload: SovereignExceptionEvidence,
+    request: Request,
+):
+    await _require_resource_authorization(request, {
+        "type": "sovereign_scheme_exception",
+        "id": exception_id,
+        "action": "record_evidence",
+    })
+    principal = getattr(request.state, "principal", {}) or {}
+    actor = str(principal.get("sub") or principal.get("client_id") or ("sandbox" if not settings.is_production else "")).strip()
+    try:
+        return record_exception_evidence(exception_id, payload.evidence_ref, actor)
+    except SovereignError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/v1/sovereign/exceptions/{exception_id}/decision")
+async def sovereign_exception_decision(
+    exception_id: str,
+    payload: SovereignExceptionDecision,
+    request: Request,
+):
+    resource_decision = await _require_resource_authorization(request, {
+        "type": "sovereign_scheme_exception",
+        "id": exception_id,
+        "action": "decide",
+        "decision": payload.decision.lower(),
+    })
+    principal = getattr(request.state, "principal", {}) or {}
+    actor = str(principal.get("sub") or principal.get("client_id") or ("sandbox" if not settings.is_production else "")).strip()
+    decision_id = str(resource_decision.get("decision_id") or ("sandbox" if not settings.is_production else "")).strip()
+    try:
+        return decide_scheme_exception(exception_id, payload.decision, actor, decision_id)
+    except SovereignError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @app.post("/v1/sovereign/settlement-cycles")
