@@ -21,7 +21,7 @@ from .reconciliation import reconcile_monetary_truth
 from .security import verify_hmac
 from .service import PaymentError, create_agent_mandate, create_agent_payment, create_identity, create_merchant, create_payment_intent, get_agent_mandate, get_payment, reconcile, register_webhook_event, settle_payment
 from .settlement import ProviderSettlementError, provider_fail, provider_succeed
-from .sovereign import SovereignError, create_scheme_participant, register_payment_alias, resolve_payment_alias
+from .sovereign import SovereignError, create_scheme_participant, register_payment_alias, resolve_payment_alias, set_participant_status
 
 
 @asynccontextmanager
@@ -49,6 +49,11 @@ class SovereignParticipantCreate(BaseModel):
     name: str = Field(min_length=1, max_length=160)
     participant_type: str = Field(min_length=1, max_length=32)
     scheme_code: str = Field(min_length=1, max_length=64)
+
+
+class SovereignParticipantStatus(BaseModel):
+    status: str = Field(min_length=5, max_length=16)
+    evidence_ref: str = Field(min_length=1, max_length=512)
 
 
 class SovereignAliasCreate(BaseModel):
@@ -250,6 +255,29 @@ async def sovereign_participant_create(payload: SovereignParticipantCreate, requ
     })
     try:
         return create_scheme_participant(payload.name, payload.participant_type, payload.scheme_code)
+    except SovereignError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/v1/sovereign/participants/{participant_id}/status")
+async def sovereign_participant_status(participant_id: str, payload: SovereignParticipantStatus, request: Request):
+    resource_decision = await _require_resource_authorization(request, {
+        "type": "sovereign_participant",
+        "id": participant_id,
+        "action": "status_change",
+        "target_status": payload.status.lower(),
+    })
+    principal = getattr(request.state, "principal", {}) or {}
+    actor = str(principal.get("sub") or principal.get("client_id") or ("sandbox" if not settings.is_production else "")).strip()
+    decision_id = str(resource_decision.get("decision_id") or ("sandbox" if not settings.is_production else "")).strip()
+    try:
+        return set_participant_status(
+            participant_id,
+            payload.status,
+            evidence_ref=payload.evidence_ref,
+            actor=actor,
+            authorization_decision_id=decision_id,
+        )
     except SovereignError as exc:
         raise HTTPException(400, str(exc)) from exc
 
