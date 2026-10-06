@@ -29,6 +29,8 @@ CREATE TABLE IF NOT EXISTS payment_idempotency (idempotency_key TEXT PRIMARY KEY
 CREATE TABLE IF NOT EXISTS scheme_participants (id TEXT PRIMARY KEY,name TEXT NOT NULL,participant_type TEXT NOT NULL,scheme_code TEXT NOT NULL UNIQUE,status TEXT NOT NULL,created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS payment_aliases (id TEXT PRIMARY KEY,participant_id TEXT NOT NULL REFERENCES scheme_participants(id),alias TEXT NOT NULL UNIQUE,account_ref TEXT NOT NULL,alias_type TEXT NOT NULL,created_at TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS ix_payment_aliases_participant ON payment_aliases(participant_id);
+CREATE TABLE IF NOT EXISTS scheme_qr_records (id TEXT PRIMARY KEY,participant_id TEXT NOT NULL REFERENCES scheme_participants(id),merchant_ref TEXT NOT NULL,alias TEXT NOT NULL,currency TEXT NOT NULL,amount_minor INTEGER,nonce TEXT NOT NULL,expires_at TEXT,created_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS ix_scheme_qr_records_participant ON scheme_qr_records(participant_id);
 """
 
 POSTGRES_SCHEMA = """
@@ -50,6 +52,8 @@ CREATE TABLE IF NOT EXISTS payment_idempotency (idempotency_key TEXT PRIMARY KEY
 CREATE TABLE IF NOT EXISTS scheme_participants (id TEXT PRIMARY KEY,name TEXT NOT NULL,participant_type TEXT NOT NULL,scheme_code TEXT NOT NULL UNIQUE,status TEXT NOT NULL,created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS payment_aliases (id TEXT PRIMARY KEY,participant_id TEXT NOT NULL REFERENCES scheme_participants(id),alias TEXT NOT NULL UNIQUE,account_ref TEXT NOT NULL,alias_type TEXT NOT NULL,created_at TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS ix_payment_aliases_participant ON payment_aliases(participant_id);
+CREATE TABLE IF NOT EXISTS scheme_qr_records (id TEXT PRIMARY KEY,participant_id TEXT NOT NULL REFERENCES scheme_participants(id),merchant_ref TEXT NOT NULL,alias TEXT NOT NULL,currency TEXT NOT NULL,amount_minor BIGINT,nonce TEXT NOT NULL,expires_at TEXT,created_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS ix_scheme_qr_records_participant ON scheme_qr_records(participant_id);
 """
 
 
