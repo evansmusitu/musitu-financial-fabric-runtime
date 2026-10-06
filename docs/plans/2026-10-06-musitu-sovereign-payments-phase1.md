@@ -167,12 +167,14 @@ Commit message: `feat: add sovereign request to pay`
 ### Task 4: Isolation, capability declaration, and full regression gate
 
 **Files:**
-- Modify: `musitu_financial_fabric/app/component_registry.py`
+- Modify: `musitu_financial_fabric/app/sovereign.py`
+- Modify: `musitu_financial_fabric/app/main.py`
 - Test: `musitu_financial_fabric/tests/test_sovereign_isolation.py`
 - Create: `docs/sovereign-payments/PHASE1_SCOPE.md`
 
 **Interfaces:**
-- Declares `sovereign-directory`, `sovereign-qr`, and `request-to-pay` as native/reference capabilities.
+- Exposes a separate `sovereign_capabilities()` manifest and `GET /v1/sovereign/capabilities`.
+- Declares `sovereign-directory`, `sovereign-qr`, and `request-to-pay` as reference capabilities without changing the authoritative 39-item required-component registry.
 - Does not add `sovereign` to `_PRODUCTION_IMPLEMENTED_RAILS`.
 - Does not change existing rail selection defaults.
 
@@ -180,7 +182,7 @@ Commit message: `feat: add sovereign request to pay`
   - Existing `RAILS` production behavior remains unchanged.
   - `_PRODUCTION_IMPLEMENTED_RAILS == {"ecocash"}`.
   - Sovereign APIs never invoke `PaymentRail.create_payment` in Phase 1.
-  - New capabilities are visible in the component manifest with `kind="native"`.
+  - New capabilities are visible through the separate sovereign capability manifest; the authoritative 39-item required-component manifest remains unchanged.
 
 - [ ] **Step 2: Verify the relevant failure**
 
@@ -188,7 +190,7 @@ Run: `cd musitu_financial_fabric && pytest -q tests/test_sovereign_isolation.py`
 Expected: non-zero until capability declarations exist.
 
 - [ ] **Step 3: Implement the minimum behavior**
-  - Add native capability declarations only.
+  - Add the isolated sovereign capability manifest only; do not mutate `component_registry.COMPONENTS`.
   - Document that Phase 1 is a scheme/reference layer, not a licensed rail or production switch.
   - Document explicit non-goals: clearing/liquidity finality, participant certification, EMVCo certification, disputes, offline value and production national switch deployment.
 
