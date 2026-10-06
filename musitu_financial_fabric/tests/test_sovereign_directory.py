@@ -125,6 +125,11 @@ def test_suspended_participant_alias_fails_closed_and_reactivation_restores_reso
     alias = sovereign.register_payment_alias(participant["id"], "payer@psp", "acct-payer", "vpa")
     assert sovereign.resolve_payment_alias(alias["alias"]) is not None
 
+    activated = sovereign.set_participant_status(
+        participant["id"], "active", evidence_ref="sandbox-activation", actor="sandbox", authorization_decision_id="sandbox"
+    )
+    assert activated["status"] == "active"
+
     suspended = sovereign.set_participant_status(
         participant["id"], "suspended", evidence_ref="sandbox-risk-hold", actor="sandbox", authorization_decision_id="sandbox"
     )
