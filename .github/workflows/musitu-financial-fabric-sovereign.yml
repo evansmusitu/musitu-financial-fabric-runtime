@@ -14,6 +14,35 @@ permissions:
   contents: read
 
 jobs:
+  syntax:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: musitu_financial_fabric
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Compile changed Python without dependency installation
+        run: python3 -m py_compile app/db.py app/sovereign.py app/main.py tests/test_sovereign_directory.py tests/test_sovereign_qr.py tests/test_sovereign_request_to_pay.py tests/test_sovereign_isolation.py
+
+  isolation-static:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Confirm production rail and registry isolation
+        run: |
+          grep -F '_PRODUCTION_IMPLEMENTED_RAILS = {"ecocash"}' musitu_financial_fabric/app/production.py
+          ! grep -F '"sovereign":' musitu_financial_fabric/app/service.py
+          python3 - <<'PY'
+          from pathlib import Path
+          source = Path('musitu_financial_fabric/app/component_registry.py').read_text()
+          start = source.index('COMPONENTS: tuple[Component, ...] = (')
+          end = source.index('\n\n\ndef component_manifest', start)
+          block = source[start:end]
+          count = block.count('    Component(')
+          assert count == 39, count
+          print('required-component-declarations=39')
+          PY
+
   compile:
     runs-on: ubuntu-24.04
     defaults:
