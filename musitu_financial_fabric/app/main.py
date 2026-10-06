@@ -21,7 +21,7 @@ from .reconciliation import reconcile_monetary_truth
 from .security import verify_hmac
 from .service import PaymentError, create_agent_mandate, create_agent_payment, create_identity, create_merchant, create_payment_intent, get_agent_mandate, get_payment, reconcile, register_webhook_event, settle_payment
 from .settlement import ProviderSettlementError, provider_fail, provider_succeed
-from .sovereign import SovereignError, create_qr_record, create_request_to_pay, create_scheme_participant, register_payment_alias, resolve_payment_alias, resolve_qr_record, respond_request_to_pay, set_participant_status, sovereign_capabilities
+from .sovereign import SovereignError, create_qr_record, create_request_to_pay, create_scheme_participant, register_payment_alias, register_qr_scheme_profile, resolve_payment_alias, resolve_qr_record, respond_request_to_pay, set_participant_status, sovereign_capabilities
 
 
 @asynccontextmanager
@@ -63,6 +63,13 @@ class SovereignAliasCreate(BaseModel):
     alias_type: str = Field(min_length=1, max_length=32)
 
 
+class SovereignQrSchemeProfileCreate(BaseModel):
+    participant_id: str = Field(min_length=1, max_length=96)
+    profile_key: str = Field(min_length=1, max_length=64)
+    mai_id: str = Field(min_length=2, max_length=2)
+    allocation_ref: str = Field(min_length=1, max_length=512)
+
+
 class SovereignQrCreate(BaseModel):
     participant_id: str = Field(min_length=1, max_length=96)
     merchant_ref: str = Field(min_length=1, max_length=256)
@@ -70,6 +77,9 @@ class SovereignQrCreate(BaseModel):
     currency: str = Field(min_length=3, max_length=3)
     amount_minor: int | None = None
     expires_at: str | None = None
+    profile_key: str = Field(default="generic", min_length=1, max_length=64)
+    scheme_profile_id: str | None = Field(default=None, max_length=96)
+    channel: str = Field(default="pos", min_length=1, max_length=32)
 
 
 class SovereignRequestToPayCreate(BaseModel):
@@ -333,6 +343,26 @@ async def sovereign_alias_get(alias: str, request: Request):
     return resolved
 
 
+@app.post("/v1/sovereign/qr-scheme-profiles")
+async def sovereign_qr_scheme_profile_create(payload: SovereignQrSchemeProfileCreate, request: Request):
+    await _require_resource_authorization(request, {
+        "type": "sovereign_qr_scheme_profile",
+        "action": "create",
+        "participant_id": payload.participant_id,
+        "profile_key": payload.profile_key.lower(),
+        "mai_id": payload.mai_id,
+    })
+    try:
+        return register_qr_scheme_profile(
+            payload.participant_id,
+            payload.profile_key,
+            payload.mai_id,
+            payload.allocation_ref,
+        )
+    except SovereignError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
 @app.post("/v1/sovereign/qr")
 async def sovereign_qr_create(payload: SovereignQrCreate, request: Request):
     await _require_resource_authorization(request, {
@@ -341,6 +371,8 @@ async def sovereign_qr_create(payload: SovereignQrCreate, request: Request):
         "participant_id": payload.participant_id,
         "currency": payload.currency.upper(),
         "amount_minor": payload.amount_minor,
+        "profile_key": payload.profile_key.lower(),
+        "channel": payload.channel.lower(),
     })
     try:
         return create_qr_record(
@@ -350,6 +382,9 @@ async def sovereign_qr_create(payload: SovereignQrCreate, request: Request):
             payload.currency,
             amount_minor=payload.amount_minor,
             expires_at=payload.expires_at,
+            profile_key=payload.profile_key,
+            scheme_profile_id=payload.scheme_profile_id,
+            channel=payload.channel,
         )
     except SovereignError as exc:
         raise HTTPException(400, str(exc)) from exc
