@@ -53,6 +53,13 @@ _SOVEREIGN_CAPABILITIES = (
         "production_enabled": False,
         "moves_funds": False,
     },
+    {
+        "key": "switch-transfer-contract",
+        "name": "Sovereign Switch Transfer Contract",
+        "phase": "reference",
+        "production_enabled": False,
+        "moves_funds": False,
+    },
 )
 
 
