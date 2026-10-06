@@ -559,6 +559,9 @@ def respond_request_to_pay(request_id: str, decision: str, actor_alias: str) -> 
                 if actor_alias != expected_actor:
                     raise SovereignError("only payee alias may cancel request-to-pay")
 
+            if resolve_payment_alias(actor_alias) is None:
+                raise SovereignError("request-to-pay actor alias is not currently resolvable")
+
             ts = now_iso()
             updated = conn.execute(
                 "UPDATE request_to_pay SET status=?,updated_at=? WHERE id=? AND status='pending'",
