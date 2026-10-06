@@ -22,7 +22,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Compile changed Python without dependency installation
-        run: python3 -m py_compile app/db.py app/sovereign.py app/main.py tests/test_sovereign_directory.py tests/test_sovereign_qr.py tests/test_sovereign_request_to_pay.py tests/test_sovereign_isolation.py tests/test_sovereign_postgres_idempotency.py tests/test_sovereign_zimbabwe_profile.py tests/test_sovereign_certification.py tests/test_sovereign_switch_contract.py tests/test_sovereign_clearing.py
+        run: python3 -m py_compile app/db.py app/sovereign.py app/main.py tests/test_sovereign_directory.py tests/test_sovereign_qr.py tests/test_sovereign_request_to_pay.py tests/test_sovereign_isolation.py tests/test_sovereign_postgres_idempotency.py tests/test_sovereign_zimbabwe_profile.py tests/test_sovereign_certification.py tests/test_sovereign_switch_contract.py tests/test_sovereign_clearing.py tests/test_sovereign_disputes.py
 
   isolation-static:
     runs-on: ubuntu-24.04
