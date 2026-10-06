@@ -17,6 +17,17 @@ class SovereignError(RuntimeError):
 PARTICIPANT_TYPES = {"bank", "mobile_money", "fintech", "government", "switch", "psp"}
 ALIAS_TYPES = {"phone", "email", "vpa", "merchant", "account"}
 
+COUNTRY_PROFILE_DEPENDENCIES = {
+    "zimbabwe-2026": (
+        "national_switch_message_interface",
+        "authoritative_mai_allocation",
+        "emvco_conformance",
+        "participant_certification_pack",
+        "settlement_finality_rules",
+    ),
+}
+COUNTRY_PROFILE_DEPENDENCY_STATUSES = {"unconfigured", "reference", "externally_verified"}
+
 _SOVEREIGN_CAPABILITIES = (
     {
         "key": "sovereign-directory",
@@ -70,6 +81,13 @@ _SOVEREIGN_CAPABILITIES = (
     {
         "key": "scheme-exceptions",
         "name": "Sovereign Refund Reversal and Dispute Lifecycle",
+        "phase": "reference",
+        "production_enabled": False,
+        "moves_funds": False,
+    },
+    {
+        "key": "country-profile-gate",
+        "name": "Sovereign Country Profile External Evidence Gate",
         "phase": "reference",
         "production_enabled": False,
         "moves_funds": False,
@@ -1136,6 +1154,167 @@ def decide_scheme_exception(
     if not result:
         raise SovereignError("scheme exception disappeared after decision")
     return _scheme_exception_public(dict(result))
+
+
+def country_profile_gate(profile_key: str) -> dict:
+    profile_key = str(profile_key or "").strip().lower()
+    required = COUNTRY_PROFILE_DEPENDENCIES.get(profile_key)
+    if not required:
+        raise SovereignError("unsupported country profile")
+
+    with connect() as conn:
+        rows = conn.execute(
+            """SELECT * FROM country_profile_dependencies
+               WHERE profile_key=? ORDER BY dependency_key""",
+            (profile_key,),
+        ).fetchall()
+
+    persisted = {str(row["dependency_key"]): dict(row) for row in rows}
+    dependencies: dict[str, dict] = {}
+    blockers: list[str] = []
+    for dependency_key in required:
+        row = persisted.get(dependency_key)
+        status = str(row["status"]) if row else "unconfigured"
+        item = {
+            "status": status,
+            "evidence_ref": row["evidence_ref"] if row else None,
+            "updated_at": row["updated_at"] if row else None,
+        }
+        dependencies[dependency_key] = item
+        if status != "externally_verified":
+            blockers.append(dependency_key)
+
+    return {
+        "profile_key": profile_key,
+        "dependencies": dependencies,
+        "blockers": blockers,
+        "external_dependencies_ready": not blockers,
+        "production_enabled": False,
+    }
+
+
+def set_country_profile_dependency(
+    profile_key: str,
+    dependency_key: str,
+    status: str,
+    *,
+    evidence_ref: str,
+    actor: str,
+    authorization_decision_id: str,
+) -> dict:
+    profile_key = str(profile_key or "").strip().lower()
+    dependency_key = str(dependency_key or "").strip().lower()
+    status = str(status or "").strip().lower()
+    evidence_ref = str(evidence_ref or "").strip()
+    actor = str(actor or "").strip()
+    authorization_decision_id = str(authorization_decision_id or "").strip()
+
+    required = COUNTRY_PROFILE_DEPENDENCIES.get(profile_key)
+    if not required:
+        raise SovereignError("unsupported country profile")
+    if dependency_key not in required:
+        raise SovereignError("unsupported country profile dependency")
+    if status not in COUNTRY_PROFILE_DEPENDENCY_STATUSES:
+        raise SovereignError("unsupported country profile dependency status")
+    if not actor:
+        raise SovereignError("country profile dependency actor is required")
+    if not authorization_decision_id:
+        raise SovereignError("country profile dependency authorization decision is required")
+    if status == "externally_verified" and not evidence_ref:
+        raise SovereignError("externally verified dependency requires evidence reference")
+
+    with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            existing = conn.execute(
+                """SELECT * FROM country_profile_dependencies
+                   WHERE profile_key=? AND dependency_key=?""",
+                (profile_key, dependency_key),
+            ).fetchone()
+            previous_status = str(existing["status"]) if existing else "unconfigured"
+            if previous_status == "externally_verified" and status != "externally_verified" and not evidence_ref:
+                raise SovereignError("revoking external verification requires evidence reference")
+
+            if existing:
+                same = (
+                    str(existing["status"]) == status
+                    and str(existing["evidence_ref"] or "") == evidence_ref
+                    and str(existing["actor"]) == actor
+                    and str(existing["authorization_decision_id"]) == authorization_decision_id
+                )
+                if same:
+                    conn.execute("COMMIT")
+                    return dict(existing)
+                ts = now_iso()
+                conn.execute(
+                    """UPDATE country_profile_dependencies
+                       SET status=?,evidence_ref=?,actor=?,authorization_decision_id=?,updated_at=?
+                       WHERE profile_key=? AND dependency_key=?""",
+                    (
+                        status,
+                        evidence_ref or None,
+                        actor,
+                        authorization_decision_id,
+                        ts,
+                        profile_key,
+                        dependency_key,
+                    ),
+                )
+                dependency_id = str(existing["id"])
+                created_at = str(existing["created_at"])
+            else:
+                dependency_id = f"cpd_{uuid.uuid4().hex}"
+                ts = now_iso()
+                created_at = ts
+                conn.execute(
+                    """INSERT INTO country_profile_dependencies
+                       (id,profile_key,dependency_key,status,evidence_ref,actor,
+                        authorization_decision_id,created_at,updated_at)
+                       VALUES (?,?,?,?,?,?,?,?,?)""",
+                    (
+                        dependency_id,
+                        profile_key,
+                        dependency_key,
+                        status,
+                        evidence_ref or None,
+                        actor,
+                        authorization_decision_id,
+                        created_at,
+                        ts,
+                    ),
+                )
+
+            append_audit(
+                "sovereign.country_profile_dependency_changed",
+                dependency_id,
+                {
+                    "profile_key": profile_key,
+                    "dependency_key": dependency_key,
+                    "previous_status": previous_status,
+                    "status": status,
+                    "evidence_ref": evidence_ref or None,
+                    "actor": actor,
+                    "authorization_decision_id": authorization_decision_id,
+                },
+                conn=conn,
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
+
+    return {
+        "id": dependency_id,
+        "profile_key": profile_key,
+        "dependency_key": dependency_key,
+        "status": status,
+        "evidence_ref": evidence_ref or None,
+        "actor": actor,
+        "authorization_decision_id": authorization_decision_id,
+        "created_at": created_at,
+        "updated_at": ts,
+    }
 
 
 def _currency_code(value: str) -> str:
