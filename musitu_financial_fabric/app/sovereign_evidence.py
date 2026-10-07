@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 import uuid
+from pathlib import Path
 from typing import Any
 
 from .audit import append_audit, now_iso
@@ -91,6 +92,41 @@ def _load(record_id: str) -> dict[str, Any]:
     if not row:
         raise SovereignEvidenceError("evidence record not found")
     return dict(row)
+
+
+def register_country_profile_evidence_file(
+    profile_key: str,
+    dependency_key: str,
+    *,
+    file_path: str | Path,
+    evidence_ref: str,
+    source_authority: str,
+    source_version: str,
+    source_location: str,
+    actor: str,
+) -> dict[str, Any]:
+    path = Path(file_path)
+    if not path.is_file():
+        raise SovereignEvidenceError("evidence file not found")
+
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while True:
+            chunk = handle.read(1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+
+    return register_country_profile_evidence(
+        profile_key,
+        dependency_key,
+        evidence_ref=evidence_ref,
+        source_authority=source_authority,
+        source_version=source_version,
+        source_location=source_location,
+        source_sha256=digest.hexdigest(),
+        actor=actor,
+    )
 
 
 def register_country_profile_evidence(
