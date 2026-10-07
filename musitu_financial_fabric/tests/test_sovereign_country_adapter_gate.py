@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from app import audit, db, sovereign
+from app import sovereign_evidence as evidence
 from app.config import Settings
 from app.db import _PostgresConnection
 
@@ -63,16 +64,31 @@ def test_external_verification_requires_evidence_and_all_dependencies(tmp_path):
         )
 
     for index, key in enumerate(dependencies):
-        verified = sovereign.set_country_profile_dependency(
+        record = evidence.register_country_profile_evidence(
             "zimbabwe-2026",
             key,
-            "externally_verified",
             evidence_ref=f"external-evidence-{index}",
+            source_authority="Test Operator",
+            source_version="v1",
+            source_location=f"operator-room/{key}.pdf",
+            source_sha256=f"{index + 1:064x}",
+            actor="operator-intake",
+        )
+        evidence.verify_country_profile_evidence(
+            record["id"],
+            actor="operator-reviewer",
+            authorization_decision_id=f"verify-{index}",
+        )
+        verified = evidence.promote_country_profile_dependency_from_evidence(
+            "zimbabwe-2026",
+            key,
+            record["id"],
             actor="operator",
             authorization_decision_id=f"authz-{index}",
         )
         assert verified["status"] == "externally_verified"
-        assert verified["evidence_ref"] == f"external-evidence-{index}"
+        assert verified["evidence_ref"].startswith("evidence-record:")
+        assert verified["evidence_record_id"] == record["id"]
 
     gate = sovereign.country_profile_gate("zimbabwe-2026")
     assert gate["external_dependencies_ready"] is True
