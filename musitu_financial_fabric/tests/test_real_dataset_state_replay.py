@@ -69,3 +69,18 @@ def test_real_dataset_state_replay_limit_is_source_row_limit(tmp_path):
     assert result["source_rows_processed"] == 2
     assert result["obligations_recorded"] == 2
     assert result["fraud_labels_observed"] == 1
+
+
+def test_real_dataset_state_replay_start_row_selects_non_overlapping_source_slice(tmp_path):
+    _, _, _, evidence = setup_modules(tmp_path)
+    path = tmp_path / "ulb.arff"
+    path.write_text(ARFF, encoding="utf-8")
+
+    result = evidence.replay_ulb_state(path, start_row=2, limit=2)
+
+    assert result["source_start_row"] == 2
+    assert result["source_end_row"] == 3
+    assert result["source_rows_processed"] == 2
+    assert result["obligations_recorded"] == 1
+    assert result["zero_amount_rows_skipped"] == 1
+    assert result["fraud_labels_observed"] == 1
