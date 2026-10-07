@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from app import audit, db, sovereign
+from app import sovereign_evidence as evidence
 from app.config import Settings
 from app.sovereign_conformance import (
     GENERIC_ADAPTER_BEHAVIORS,
@@ -65,11 +66,25 @@ def test_supported_behavior_requires_mapping_evidence(tmp_path):
 def test_complete_manifest_plus_external_evidence_is_adapter_ready_but_not_production_authorized(tmp_path):
     setup_env(tmp_path)
     for index, key in enumerate(sovereign.country_profile_gate("zimbabwe-2026")["dependencies"]):
-        sovereign.set_country_profile_dependency(
+        record = evidence.register_country_profile_evidence(
             "zimbabwe-2026",
             key,
-            "externally_verified",
             evidence_ref=f"external-evidence-{index}",
+            source_authority="Test Operator",
+            source_version="v1",
+            source_location=f"operator-room/{key}.pdf",
+            source_sha256=f"{index + 1:064x}",
+            actor="operator-intake",
+        )
+        evidence.verify_country_profile_evidence(
+            record["id"],
+            actor="operator-reviewer",
+            authorization_decision_id=f"verify-{index}",
+        )
+        evidence.promote_country_profile_dependency_from_evidence(
+            "zimbabwe-2026",
+            key,
+            record["id"],
             actor="operator",
             authorization_decision_id=f"authz-{index}",
         )
