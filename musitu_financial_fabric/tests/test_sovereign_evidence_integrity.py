@@ -167,3 +167,70 @@ def test_free_form_external_verification_cannot_bypass_evidence_ledger(tmp_path)
 
     gate = sovereign.country_profile_gate("zimbabwe-2026")
     assert "national_switch_message_interface" in gate["blockers"]
+
+
+def test_revoking_promoted_evidence_reblocks_dependency(tmp_path):
+    _, _, sovereign, evidence = setup_modules(tmp_path)
+    record = sample_registration(evidence)
+    evidence.verify_country_profile_evidence(
+        record["id"],
+        actor="evidence-reviewer",
+        authorization_decision_id="verify-1",
+    )
+    evidence.promote_country_profile_dependency_from_evidence(
+        "zimbabwe-2026",
+        "national_switch_message_interface",
+        record["id"],
+        actor="operator-intake",
+        authorization_decision_id="promote-1",
+    )
+    assert "national_switch_message_interface" not in sovereign.country_profile_gate(
+        "zimbabwe-2026"
+    )["blockers"]
+
+    evidence.revoke_country_profile_evidence(
+        record["id"],
+        actor="evidence-reviewer",
+        authorization_decision_id="revoke-1",
+        reason="superseded",
+    )
+    gate = sovereign.country_profile_gate("zimbabwe-2026")
+    item = gate["dependencies"]["national_switch_message_interface"]
+    assert "national_switch_message_interface" in gate["blockers"]
+    assert item["status"] == "reference"
+    assert item["evidence_ref"].startswith("revoked-evidence-record:")
+
+
+class _FakeConnection:
+    def __init__(self):
+        self.calls = []
+
+    def execute(self, sql, params=()):
+        self.calls.append((sql, tuple(params)))
+        return object()
+
+
+def test_postgres_evidence_lookups_take_advisory_locks_first():
+    from app.db import _PostgresConnection
+
+    raw = _FakeConnection()
+    conn = _PostgresConnection(raw)
+
+    conn.execute(
+        "SELECT * FROM country_profile_evidence_records WHERE evidence_ref=?",
+        ("operator:spec-v1",),
+    )
+    assert raw.calls[0] == (
+        "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+        ("evidence-ref:operator:spec-v1",),
+    )
+
+    raw.calls.clear()
+    conn.execute(
+        "SELECT * FROM country_profile_evidence_records WHERE id=?",
+        ("cpe_123",),
+    )
+    assert raw.calls[0] == (
+        "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+        ("evidence-id:cpe_123",),
+    )
