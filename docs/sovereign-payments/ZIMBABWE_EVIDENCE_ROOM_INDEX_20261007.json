@@ -8,7 +8,8 @@
     "01_engineering_verification": [
       "VERIFICATION_20261006.md",
       "PHASE3_REFERENCE_UAT_VERIFICATION_20261006.md",
-      "PHASE4_CONFORMANCE_VERIFICATION_20261007.md"
+      "PHASE4_CONFORMANCE_VERIFICATION_20261007.md",
+      "EXTERNAL_EVIDENCE_INTEGRITY_VERIFICATION_20261007.md"
     ],
     "02_product_architecture": [
       "PHASE1_SCOPE.md",
@@ -32,6 +33,10 @@
     "06_sandbox_preparation": [
       "ZIMBABWE_SANDBOX_APPLICATION_SKELETON_20261007.md",
       "ZIMBABWE_LICENSED_PARTNER_SELECTION_FRAMEWORK_20261007.md"
+    ],
+    "07_real_dataset_evidence": [
+      "REAL_DATASET_ULB_2013_EVIDENCE_20261007.md",
+      "evidence/ULB_2013_20261007.json"
     ]
   },
   "unresolved_external_dependencies": [
@@ -41,5 +46,13 @@
     "participant_certification_pack",
     "settlement_finality_rules"
   ],
-  "next_authorization_boundary": "owner approval to send RBZ/Zimswitch enquiries"
+  "next_authorization_boundary": "owner approval to send RBZ/Zimswitch enquiries",
+  "current_engineering_state": {
+    "evidence_integrity_head": "87f905ecf8b51dcda28ef95850e7211bec611a5f",
+    "free_form_external_verification_blocked": true,
+    "exact_file_sha256_ingestion": true,
+    "evidence_revocation_reblocks_dependency": true,
+    "real_postgresql_evidence_lifecycle_verified": true,
+    "production_authorized": false
+  }
 }
