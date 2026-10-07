@@ -9,7 +9,7 @@ from app.config import Settings
 
 def write_elliptic_fixture(root: Path, *, broken_edge: bool = False) -> Path:
     data = root / "elliptic_bitcoin_dataset"
-    data.mkdir()
+    data.mkdir(parents=True)
     (data / "elliptic_txs_features.csv").write_text(
         "1001,1,0.1,0.2\n"
         "1002,1,0.3,0.4\n"
