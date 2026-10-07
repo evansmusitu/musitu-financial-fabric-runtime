@@ -99,3 +99,39 @@ Even then this layer still returns:
 - `regulatory_authorized=false`.
 
 Production remains governed by the separate Financial Fabric live-funds and production-authorization controls.
+
+
+## Hash-bound evidence ingestion
+
+When an authoritative operator document is received, do not manually type a digest into the dependency gate.
+
+Register the exact file bytes first:
+
+```bash
+export MUSITU_ENV=sandbox
+python scripts/register_sovereign_evidence.py \
+  --profile zimbabwe-2026 \
+  --dependency national_switch_message_interface \
+  --file /secure/path/operator-spec.pdf \
+  --evidence-ref operator:zimswitch:spec-v1 \
+  --authority "Zimswitch Technologies" \
+  --version "v1" \
+  --source-location "secure-evidence-room/operator-spec-v1.pdf" \
+  --actor evidence-intake \
+  --db-path /secure/path/evidence-ledger.db \
+  --output /secure/path/evidence-record.json
+```
+
+This performs **registration only**.
+
+Required promotion sequence is:
+
+1. register exact file bytes;
+2. independently review the document;
+3. verify the evidence record with an explicit authorization decision;
+4. promote only the matching country dependency from that verified record;
+5. run the country-adapter conformance suite again.
+
+Free-form `externally_verified` references are rejected by the core country-profile gate.
+
+If a verified evidence record is later revoked or superseded, any dependency promoted from that exact record is re-blocked automatically.
