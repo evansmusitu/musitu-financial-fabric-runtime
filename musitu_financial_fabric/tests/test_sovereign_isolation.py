@@ -26,6 +26,7 @@ def test_sovereign_capability_manifest_is_reference_only():
         "clearing-reference-ledger",
         "scheme-exceptions",
         "country-profile-gate",
+        "country-adapter-conformance",
     }
     assert all(item["phase"] == "reference" for item in capabilities)
     assert all(item["production_enabled"] is False for item in capabilities)
