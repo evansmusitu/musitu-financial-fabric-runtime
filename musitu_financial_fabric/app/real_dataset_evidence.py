@@ -371,3 +371,215 @@ def replay_ulb_state(path: str | Path, *, limit: int | None = None) -> dict:
         "live_funds_moved": False,
         "production_authorized": False,
     }
+
+
+
+_ELLIPTIC_FEATURES = "elliptic_txs_features.csv"
+_ELLIPTIC_CLASSES = "elliptic_txs_classes.csv"
+_ELLIPTIC_EDGES = "elliptic_txs_edgelist.csv"
+
+
+def _elliptic_dataset_dir(root: str | Path) -> Path:
+    root_path = Path(root)
+    nested = root_path / "elliptic_bitcoin_dataset"
+    candidates = (nested, root_path)
+    for candidate in candidates:
+        if all((candidate / name).is_file() for name in (_ELLIPTIC_FEATURES, _ELLIPTIC_CLASSES, _ELLIPTIC_EDGES)):
+            return candidate
+    raise EvidenceError("Elliptic dataset files not found")
+
+
+def _elliptic_label(value: str) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized == "1":
+        return "illicit"
+    if normalized == "2":
+        return "licit"
+    if normalized == "unknown":
+        return "unknown"
+    raise EvidenceError(f"unsupported Elliptic class label: {value}")
+
+
+def scan_elliptic_dataset(root: str | Path) -> dict:
+    data_dir = _elliptic_dataset_dir(root)
+    features_path = data_dir / _ELLIPTIC_FEATURES
+    classes_path = data_dir / _ELLIPTIC_CLASSES
+    edges_path = data_dir / _ELLIPTIC_EDGES
+
+    file_hashes = {
+        "features": _file_sha256(features_path),
+        "classes": _file_sha256(classes_path),
+        "edges": _file_sha256(edges_path),
+    }
+    fingerprint = hashlib.sha256()
+    for key in ("features", "classes", "edges"):
+        fingerprint.update(f"{key}:{file_hashes[key]}\n".encode("utf-8"))
+
+    node_ids: set[str] = set()
+    min_time_step: int | None = None
+    max_time_step: int | None = None
+    with features_path.open("r", encoding="utf-8", newline="") as fh:
+        reader = csv.reader(fh)
+        for row_number, row in enumerate(reader, start=1):
+            if len(row) < 2:
+                raise EvidenceError(f"Elliptic feature row {row_number} is malformed")
+            tx_id = str(row[0]).strip()
+            if not tx_id:
+                raise EvidenceError(f"Elliptic feature row {row_number} has empty transaction id")
+            if tx_id in node_ids:
+                raise EvidenceError(f"duplicate Elliptic transaction id: {tx_id}")
+            try:
+                time_step = int(str(row[1]).strip())
+            except ValueError as exc:
+                raise EvidenceError(f"invalid Elliptic time step at row {row_number}") from exc
+            node_ids.add(tx_id)
+            min_time_step = time_step if min_time_step is None else min(min_time_step, time_step)
+            max_time_step = time_step if max_time_step is None else max(max_time_step, time_step)
+
+    labels = {"illicit": 0, "licit": 0, "unknown": 0}
+    labeled_ids: set[str] = set()
+    with classes_path.open("r", encoding="utf-8", newline="") as fh:
+        reader = csv.DictReader(fh)
+        if not reader.fieldnames or "txId" not in reader.fieldnames or "class" not in reader.fieldnames:
+            raise EvidenceError("Elliptic classes required columns missing")
+        for row in reader:
+            tx_id = str(row.get("txId") or "").strip()
+            if tx_id not in node_ids:
+                raise EvidenceError(f"Elliptic class references unknown transaction: {tx_id}")
+            if tx_id in labeled_ids:
+                raise EvidenceError(f"duplicate Elliptic class row: {tx_id}")
+            labeled_ids.add(tx_id)
+            labels[_elliptic_label(str(row.get("class") or ""))] += 1
+
+    unlabeled_nodes = node_ids - labeled_ids
+    if unlabeled_nodes:
+        raise EvidenceError(f"Elliptic transactions missing class rows: {len(unlabeled_nodes)}")
+
+    edge_count = 0
+    missing_endpoint_count = 0
+    with edges_path.open("r", encoding="utf-8", newline="") as fh:
+        reader = csv.DictReader(fh)
+        if not reader.fieldnames or "txId1" not in reader.fieldnames or "txId2" not in reader.fieldnames:
+            raise EvidenceError("Elliptic edge required columns missing")
+        for row_number, row in enumerate(reader, start=1):
+            source = str(row.get("txId1") or "").strip()
+            target = str(row.get("txId2") or "").strip()
+            edge_count += 1
+            if source not in node_ids or target not in node_ids:
+                missing_endpoint_count += 1
+                raise EvidenceError(
+                    f"Elliptic edge endpoint references unknown transaction at edge {row_number}"
+                )
+
+    return {
+        "graph": {
+            "node_count": len(node_ids),
+            "edge_count": edge_count,
+            "missing_edge_endpoint_count": missing_endpoint_count,
+        },
+        "labels": labels,
+        "time_steps": {
+            "min": min_time_step,
+            "max": max_time_step,
+        },
+        "files": file_hashes,
+        "dataset_fingerprint_sha256": fingerprint.hexdigest(),
+        "validation": {
+            "graph_integrity": missing_endpoint_count == 0,
+            "monetary_values_used": False,
+            "fraud_accuracy_evaluated": False,
+            "live_funds_moved": False,
+            "production_authorized": False,
+        },
+    }
+
+
+def replay_elliptic_illicit_exceptions(root: str | Path) -> dict:
+    data_dir = _elliptic_dataset_dir(root)
+    scan = scan_elliptic_dataset(data_dir)
+    suffix = hashlib.sha256(f"{data_dir}:{time.time_ns()}".encode("utf-8")).hexdigest()[:12]
+    claimant = create_scheme_participant(
+        "Elliptic Reference Claimant",
+        "psp",
+        f"ELLC{suffix}".upper(),
+    )
+
+    illicit_labels_observed = 0
+    disputes_created = 0
+    identical_replay_same_id = False
+    conflicting_replay_failed_closed = False
+    first_tx_id: str | None = None
+    first_exception: dict | None = None
+
+    classes_path = data_dir / _ELLIPTIC_CLASSES
+    with classes_path.open("r", encoding="utf-8", newline="") as fh:
+        reader = csv.DictReader(fh)
+        for row in reader:
+            tx_id = str(row.get("txId") or "").strip()
+            label = _elliptic_label(str(row.get("class") or ""))
+            if label != "illicit":
+                continue
+            illicit_labels_observed += 1
+            idempotency_key = f"elliptic-dispute:{tx_id}:{suffix}"
+            created = create_scheme_exception(
+                f"elliptic-tx:{tx_id}",
+                "dispute",
+                claimant["id"],
+                "real-dataset-elliptic-illicit-label",
+                idempotency_key,
+            )
+            disputes_created += 1
+            if first_tx_id is None:
+                first_tx_id = tx_id
+                first_exception = created
+                replayed = create_scheme_exception(
+                    f"elliptic-tx:{tx_id}",
+                    "dispute",
+                    claimant["id"],
+                    "real-dataset-elliptic-illicit-label",
+                    idempotency_key,
+                )
+                identical_replay_same_id = replayed["id"] == created["id"]
+                try:
+                    create_scheme_exception(
+                        f"elliptic-tx:{tx_id}",
+                        "dispute",
+                        claimant["id"],
+                        "conflicting-reference-reason",
+                        idempotency_key,
+                    )
+                except SovereignError:
+                    conflicting_replay_failed_closed = True
+
+    audit_valid, audit_events, audit_broken_at = verify_audit_chain()
+    with connect() as conn:
+        payment_intents = int(
+            conn.execute("SELECT COUNT(*) AS n FROM payment_intents").fetchone()["n"]
+        )
+        ledger_postings = int(
+            conn.execute("SELECT COUNT(*) AS n FROM ledger_postings").fetchone()["n"]
+        )
+
+    return {
+        "transactions_scanned": scan["graph"]["node_count"],
+        "edges_scanned": scan["graph"]["edge_count"],
+        "illicit_labels_observed": illicit_labels_observed,
+        "reference_disputes_created": disputes_created,
+        "idempotency": {
+            "identical_replay_same_id": identical_replay_same_id,
+            "conflicting_replay_failed_closed": conflicting_replay_failed_closed,
+        },
+        "audit": {
+            "valid": audit_valid,
+            "events": audit_events,
+            "broken_at": audit_broken_at,
+        },
+        "side_effects": {
+            "payment_intents": payment_intents,
+            "ledger_postings": ledger_postings,
+        },
+        "monetary_values_used": False,
+        "fraud_accuracy_evaluated": False,
+        "live_funds_moved": False,
+        "production_authorized": False,
+    }
