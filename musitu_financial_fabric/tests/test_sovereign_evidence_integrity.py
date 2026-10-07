@@ -234,3 +234,27 @@ def test_postgres_evidence_lookups_take_advisory_locks_first():
         "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
         ("evidence-id:cpe_123",),
     )
+
+
+def test_file_ingestion_hashes_exact_operator_bytes(tmp_path):
+    _, _, _, evidence = setup_modules(tmp_path)
+    source = tmp_path / "operator-spec-v2.pdf"
+    source.write_bytes(b"authoritative-operator-document-v2\n")
+
+    record = evidence.register_country_profile_evidence_file(
+        "zimbabwe-2026",
+        "national_switch_message_interface",
+        file_path=source,
+        evidence_ref="operator:zimswitch:spec-v2",
+        source_authority="Zimswitch Technologies",
+        source_version="v2",
+        source_location="secure-evidence-room/operator-spec-v2.pdf",
+        actor="evidence-intake",
+    )
+
+    import hashlib
+
+    expected = hashlib.sha256(source.read_bytes()).hexdigest()
+    assert record["source_sha256"] == expected
+    assert record["source_location"] == "secure-evidence-room/operator-spec-v2.pdf"
+    assert record["status"] == "registered"
