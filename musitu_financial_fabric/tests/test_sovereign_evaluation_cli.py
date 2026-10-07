@@ -51,6 +51,10 @@ def test_evaluation_pack_cli_generates_nonproduction_reference_pack(tmp_path):
     assert pack["profile_key"] == "zimbabwe-2026"
     assert pack["adapter_conformance"]["adapter_ready"] is False
     assert len(pack["country_blockers"]) == 5
+    assert all(
+        item["status"] == "reference"
+        for item in pack["adapter_conformance"]["country_dependencies"].values()
+    )
     assert pack["uat"]["live_funds_moved"] is False
     assert pack["uat"]["production_authorized"] is False
     assert pack["production_authorized"] is False
