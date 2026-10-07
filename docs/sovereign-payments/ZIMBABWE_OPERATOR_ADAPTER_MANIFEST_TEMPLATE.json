@@ -1,0 +1,60 @@
+{
+  "profile_key": "zimbabwe-2026",
+  "purpose": "Operator-supplied adapter mapping intake. Replace placeholders only with authoritative evidence.",
+  "authority": "",
+  "interface_version": "",
+  "source_evidence_ref": "",
+  "behaviors": {
+    "transfer_submit": {
+      "supported": false,
+      "mapping_ref": ""
+    },
+    "transfer_status": {
+      "supported": false,
+      "mapping_ref": ""
+    },
+    "idempotency": {
+      "supported": false,
+      "mapping_ref": ""
+    },
+    "participant_addressing": {
+      "supported": false,
+      "mapping_ref": ""
+    },
+    "exception_mapping": {
+      "supported": false,
+      "mapping_ref": ""
+    },
+    "settlement_reference": {
+      "supported": false,
+      "mapping_ref": ""
+    }
+  },
+  "external_dependencies": {
+    "national_switch_message_interface": {
+      "status": "unconfigured",
+      "evidence_ref": ""
+    },
+    "authoritative_mai_allocation": {
+      "status": "unconfigured",
+      "evidence_ref": ""
+    },
+    "emvco_conformance": {
+      "status": "unconfigured",
+      "evidence_ref": ""
+    },
+    "participant_certification_pack": {
+      "status": "unconfigured",
+      "evidence_ref": ""
+    },
+    "settlement_finality_rules": {
+      "status": "unconfigured",
+      "evidence_ref": ""
+    }
+  },
+  "non_claims": [
+    "This template is not an official RBZ or Zimswitch specification.",
+    "Completing this file does not authorize production or live funds.",
+    "Do not invent mappings where authoritative operator documentation is absent."
+  ]
+}

@@ -21,6 +21,7 @@ from .reconciliation import reconcile_monetary_truth
 from .security import verify_hmac
 from .service import PaymentError, create_agent_mandate, create_agent_payment, create_identity, create_merchant, create_payment_intent, get_agent_mandate, get_payment, reconcile, register_webhook_event, settle_payment
 from .settlement import ProviderSettlementError, provider_fail, provider_succeed
+from .sovereign import SovereignError, calculate_net_positions, close_settlement_cycle, country_profile_gate, create_certification_case, create_qr_record, create_request_to_pay, create_scheme_exception, create_scheme_participant, decide_certification, decide_scheme_exception, open_settlement_cycle, record_certification_check, record_clearing_obligation, record_exception_evidence, register_payment_alias, register_qr_scheme_profile, resolve_payment_alias, resolve_qr_record, respond_request_to_pay, set_country_profile_dependency, set_participant_status, sovereign_capabilities
 
 
 @asynccontextmanager
@@ -42,6 +43,110 @@ async def production_gate_error(_: Request, exc: ProductionGateError):
 class MerchantCreate(BaseModel):
     name: str = Field(min_length=2, max_length=160)
     currency: str = Field(default="USD", min_length=3, max_length=3)
+
+
+class SovereignParticipantCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=160)
+    participant_type: str = Field(min_length=1, max_length=32)
+    scheme_code: str = Field(min_length=1, max_length=64)
+
+
+class SovereignParticipantStatus(BaseModel):
+    status: str = Field(min_length=5, max_length=16)
+    evidence_ref: str = Field(min_length=1, max_length=512)
+
+
+class SovereignAliasCreate(BaseModel):
+    participant_id: str = Field(min_length=1, max_length=96)
+    alias: str = Field(min_length=1, max_length=256)
+    account_ref: str = Field(min_length=1, max_length=256)
+    alias_type: str = Field(min_length=1, max_length=32)
+
+
+class SovereignCertificationCreate(BaseModel):
+    participant_id: str = Field(min_length=1, max_length=96)
+    scheme_profile: str = Field(min_length=1, max_length=96)
+    evidence_ref: str = Field(min_length=1, max_length=512)
+    required_checks: list[str]
+
+
+class SovereignCertificationCheck(BaseModel):
+    check_key: str = Field(min_length=1, max_length=96)
+    result: str = Field(min_length=6, max_length=6)
+    evidence_ref: str = Field(min_length=1, max_length=512)
+
+
+class SovereignCertificationDecision(BaseModel):
+    decision: str = Field(min_length=8, max_length=8)
+
+
+class SovereignCountryDependencySet(BaseModel):
+    status: str = Field(min_length=9, max_length=19)
+    evidence_ref: str | None = Field(default=None, max_length=512)
+
+
+class SovereignExceptionCreate(BaseModel):
+    transaction_ref: str = Field(min_length=1, max_length=256)
+    kind: str = Field(min_length=1, max_length=32)
+    claimant_participant_id: str = Field(min_length=1, max_length=96)
+    reason: str = Field(min_length=1, max_length=512)
+
+
+class SovereignExceptionEvidence(BaseModel):
+    evidence_ref: str = Field(min_length=1, max_length=512)
+
+
+class SovereignExceptionDecision(BaseModel):
+    decision: str = Field(min_length=8, max_length=9)
+
+
+class SovereignSettlementCycleCreate(BaseModel):
+    profile_key: str = Field(min_length=1, max_length=96)
+    cycle_ref: str = Field(min_length=1, max_length=256)
+    currency: str = Field(min_length=3, max_length=3)
+
+
+class SovereignClearingObligationCreate(BaseModel):
+    debtor_participant_id: str = Field(min_length=1, max_length=96)
+    creditor_participant_id: str = Field(min_length=1, max_length=96)
+    amount_minor: int = Field(gt=0)
+    external_ref: str = Field(min_length=1, max_length=256)
+
+
+class SovereignSettlementCycleClose(BaseModel):
+    evidence_ref: str = Field(min_length=1, max_length=512)
+
+
+class SovereignQrSchemeProfileCreate(BaseModel):
+    participant_id: str = Field(min_length=1, max_length=96)
+    profile_key: str = Field(min_length=1, max_length=64)
+    mai_id: str = Field(min_length=2, max_length=2)
+    allocation_ref: str = Field(min_length=1, max_length=512)
+
+
+class SovereignQrCreate(BaseModel):
+    participant_id: str = Field(min_length=1, max_length=96)
+    merchant_ref: str = Field(min_length=1, max_length=256)
+    alias: str = Field(min_length=1, max_length=256)
+    currency: str = Field(min_length=3, max_length=3)
+    amount_minor: int | None = None
+    expires_at: str | None = None
+    profile_key: str = Field(default="generic", min_length=1, max_length=64)
+    scheme_profile_id: str | None = Field(default=None, max_length=96)
+    channel: str = Field(default="pos", min_length=1, max_length=32)
+
+
+class SovereignRequestToPayCreate(BaseModel):
+    payee_alias: str = Field(min_length=1, max_length=256)
+    payer_alias: str = Field(min_length=1, max_length=256)
+    amount_minor: int
+    currency: str = Field(min_length=3, max_length=3)
+    reference: str = Field(min_length=1, max_length=512)
+
+
+class SovereignRequestToPayResponse(BaseModel):
+    decision: str = Field(min_length=7, max_length=9)
+    actor_alias: str = Field(min_length=1, max_length=256)
 
 
 class MerchantReview(BaseModel):
@@ -224,6 +329,422 @@ async def mandate_get(mandate_id: str, request: Request):
     if not data:
         raise HTTPException(404, "mandate not found")
     return data
+
+
+@app.get("/v1/sovereign/capabilities")
+async def sovereign_capabilities_get(request: Request):
+    await _require_resource_authorization(request, {"type": "sovereign_capabilities", "action": "read"})
+    return {"phase": "reference", "capabilities": sovereign_capabilities()}
+
+
+@app.get("/v1/sovereign/country-profiles/{profile_key}/gate")
+async def sovereign_country_profile_gate(profile_key: str, request: Request):
+    await _require_resource_authorization(request, {
+        "type": "sovereign_country_profile",
+        "id": profile_key.lower(),
+        "action": "read_gate",
+    })
+    try:
+        return country_profile_gate(profile_key)
+    except SovereignError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/v1/sovereign/country-profiles/{profile_key}/dependencies/{dependency_key}")
+async def sovereign_country_profile_dependency_set(
+    profile_key: str,
+    dependency_key: str,
+    payload: SovereignCountryDependencySet,
+    request: Request,
+):
+    resource_decision = await _require_resource_authorization(request, {
+        "type": "sovereign_country_profile_dependency",
+        "profile_key": profile_key.lower(),
+        "dependency_key": dependency_key.lower(),
+        "action": "set_status",
+        "status": payload.status.lower(),
+    })
+    principal = getattr(request.state, "principal", {}) or {}
+    actor = str(principal.get("sub") or principal.get("client_id") or ("sandbox" if not settings.is_production else "")).strip()
+    decision_id = str(resource_decision.get("decision_id") or ("sandbox" if not settings.is_production else "")).strip()
+    try:
+        return set_country_profile_dependency(
+            profile_key,
+            dependency_key,
+            payload.status,
+            evidence_ref=payload.evidence_ref or "",
+            actor=actor,
+            authorization_decision_id=decision_id,
+        )
+    except SovereignError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/v1/sovereign/exceptions")
+async def sovereign_exception_create(
+    payload: SovereignExceptionCreate,
+    request: Request,
+    idempotency_key: str = Header(alias="Idempotency-Key"),
+):
+    await _require_resource_authorization(request, {
+        "type": "sovereign_scheme_exception",
+        "action": "create",
+        "transaction_ref": payload.transaction_ref,
+        "kind": payload.kind.lower(),
+        "claimant_participant_id": payload.claimant_participant_id,
+    })
+    try:
+        return create_scheme_exception(
+            payload.transaction_ref,
+            payload.kind,
+            payload.claimant_participant_id,
+            payload.reason,
+            idempotency_key,
+        )
+    except SovereignError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/v1/sovereign/exceptions/{exception_id}/evidence")
+async def sovereign_exception_evidence(
+    exception_id: str,
+    payload: SovereignExceptionEvidence,
+    request: Request,
+):
+    await _require_resource_authorization(request, {
+        "type": "sovereign_scheme_exception",
+        "id": exception_id,
+        "action": "record_evidence",
+    })
+    principal = getattr(request.state, "principal", {}) or {}
+    actor = str(principal.get("sub") or principal.get("client_id") or ("sandbox" if not settings.is_production else "")).strip()
+    try:
+        return record_exception_evidence(exception_id, payload.evidence_ref, actor)
+    except SovereignError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/v1/sovereign/exceptions/{exception_id}/decision")
+async def sovereign_exception_decision(
+    exception_id: str,
+    payload: SovereignExceptionDecision,
+    request: Request,
+):
+    resource_decision = await _require_resource_authorization(request, {
+        "type": "sovereign_scheme_exception",
+        "id": exception_id,
+        "action": "decide",
+        "decision": payload.decision.lower(),
+    })
+    principal = getattr(request.state, "principal", {}) or {}
+    actor = str(principal.get("sub") or principal.get("client_id") or ("sandbox" if not settings.is_production else "")).strip()
+    decision_id = str(resource_decision.get("decision_id") or ("sandbox" if not settings.is_production else "")).strip()
+    try:
+        return decide_scheme_exception(exception_id, payload.decision, actor, decision_id)
+    except SovereignError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/v1/sovereign/settlement-cycles")
+async def sovereign_settlement_cycle_create(payload: SovereignSettlementCycleCreate, request: Request):
+    await _require_resource_authorization(request, {
+        "type": "sovereign_settlement_cycle",
+        "action": "create",
+        "profile_key": payload.profile_key.lower(),
+        "cycle_ref": payload.cycle_ref,
+        "currency": payload.currency.upper(),
+    })
+    try:
+        return open_settlement_cycle(payload.profile_key, payload.cycle_ref, payload.currency)
+    except SovereignError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/v1/sovereign/settlement-cycles/{cycle_id}/obligations")
+async def sovereign_clearing_obligation_create(
+    cycle_id: str,
+    payload: SovereignClearingObligationCreate,
+    request: Request,
+):
+    await _require_resource_authorization(request, {
+        "type": "sovereign_clearing_obligation",
+        "action": "create",
+        "cycle_id": cycle_id,
+        "debtor_participant_id": payload.debtor_participant_id,
+        "creditor_participant_id": payload.creditor_participant_id,
+        "amount_minor": payload.amount_minor,
+        "external_ref": payload.external_ref,
+    })
+    try:
+        return record_clearing_obligation(
+            cycle_id,
+            payload.debtor_participant_id,
+            payload.creditor_participant_id,
+            payload.amount_minor,
+            payload.external_ref,
+        )
+    except SovereignError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.get("/v1/sovereign/settlement-cycles/{cycle_id}/positions")
+async def sovereign_settlement_cycle_positions(cycle_id: str, request: Request):
+    await _require_resource_authorization(request, {
+        "type": "sovereign_settlement_cycle",
+        "id": cycle_id,
+        "action": "read_positions",
+    })
+    try:
+        return calculate_net_positions(cycle_id)
+    except SovereignError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/v1/sovereign/settlement-cycles/{cycle_id}/close")
+async def sovereign_settlement_cycle_close(
+    cycle_id: str,
+    payload: SovereignSettlementCycleClose,
+    request: Request,
+):
+    resource_decision = await _require_resource_authorization(request, {
+        "type": "sovereign_settlement_cycle",
+        "id": cycle_id,
+        "action": "close",
+    })
+    principal = getattr(request.state, "principal", {}) or {}
+    actor = str(principal.get("sub") or principal.get("client_id") or ("sandbox" if not settings.is_production else "")).strip()
+    decision_id = str(resource_decision.get("decision_id") or ("sandbox" if not settings.is_production else "")).strip()
+    try:
+        return close_settlement_cycle(
+            cycle_id,
+            payload.evidence_ref,
+            actor,
+            decision_id,
+        )
+    except SovereignError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/v1/sovereign/certifications")
+async def sovereign_certification_create(payload: SovereignCertificationCreate, request: Request):
+    await _require_resource_authorization(request, {
+        "type": "sovereign_certification",
+        "action": "create",
+        "participant_id": payload.participant_id,
+        "scheme_profile": payload.scheme_profile.lower(),
+        "required_checks": sorted({item.strip().lower() for item in payload.required_checks if item.strip()}),
+    })
+    try:
+        return create_certification_case(
+            payload.participant_id,
+            payload.scheme_profile,
+            payload.evidence_ref,
+            payload.required_checks,
+        )
+    except SovereignError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/v1/sovereign/certifications/{case_id}/checks")
+async def sovereign_certification_check(case_id: str, payload: SovereignCertificationCheck, request: Request):
+    await _require_resource_authorization(request, {
+        "type": "sovereign_certification",
+        "id": case_id,
+        "action": "record_check",
+        "check_key": payload.check_key.lower(),
+        "result": payload.result.lower(),
+    })
+    principal = getattr(request.state, "principal", {}) or {}
+    actor = str(principal.get("sub") or principal.get("client_id") or ("sandbox" if not settings.is_production else "")).strip()
+    try:
+        return record_certification_check(
+            case_id,
+            payload.check_key,
+            payload.result,
+            payload.evidence_ref,
+            actor,
+        )
+    except SovereignError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/v1/sovereign/certifications/{case_id}/decision")
+async def sovereign_certification_decision(case_id: str, payload: SovereignCertificationDecision, request: Request):
+    resource_decision = await _require_resource_authorization(request, {
+        "type": "sovereign_certification",
+        "id": case_id,
+        "action": "decide",
+        "decision": payload.decision.lower(),
+    })
+    principal = getattr(request.state, "principal", {}) or {}
+    actor = str(principal.get("sub") or principal.get("client_id") or ("sandbox" if not settings.is_production else "")).strip()
+    decision_id = str(resource_decision.get("decision_id") or ("sandbox" if not settings.is_production else "")).strip()
+    try:
+        return decide_certification(case_id, payload.decision, actor, decision_id)
+    except SovereignError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/v1/sovereign/participants")
+async def sovereign_participant_create(payload: SovereignParticipantCreate, request: Request):
+    await _require_resource_authorization(request, {
+        "type": "sovereign_participant",
+        "action": "create",
+        "participant_type": payload.participant_type.lower(),
+        "scheme_code": payload.scheme_code,
+    })
+    try:
+        return create_scheme_participant(payload.name, payload.participant_type, payload.scheme_code)
+    except SovereignError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/v1/sovereign/participants/{participant_id}/status")
+async def sovereign_participant_status(participant_id: str, payload: SovereignParticipantStatus, request: Request):
+    resource_decision = await _require_resource_authorization(request, {
+        "type": "sovereign_participant",
+        "id": participant_id,
+        "action": "status_change",
+        "target_status": payload.status.lower(),
+    })
+    principal = getattr(request.state, "principal", {}) or {}
+    actor = str(principal.get("sub") or principal.get("client_id") or ("sandbox" if not settings.is_production else "")).strip()
+    decision_id = str(resource_decision.get("decision_id") or ("sandbox" if not settings.is_production else "")).strip()
+    try:
+        return set_participant_status(
+            participant_id,
+            payload.status,
+            evidence_ref=payload.evidence_ref,
+            actor=actor,
+            authorization_decision_id=decision_id,
+        )
+    except SovereignError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/v1/sovereign/aliases")
+async def sovereign_alias_create(payload: SovereignAliasCreate, request: Request):
+    await _require_resource_authorization(request, {
+        "type": "sovereign_alias",
+        "action": "create",
+        "participant_id": payload.participant_id,
+        "alias_type": payload.alias_type.lower(),
+    })
+    try:
+        return register_payment_alias(payload.participant_id, payload.alias, payload.account_ref, payload.alias_type)
+    except SovereignError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.get("/v1/sovereign/aliases/{alias}")
+async def sovereign_alias_get(alias: str, request: Request):
+    await _require_resource_authorization(request, {"type": "sovereign_alias", "action": "read", "alias": alias.lower()})
+    resolved = resolve_payment_alias(alias)
+    if not resolved:
+        raise HTTPException(404, "payment alias not found")
+    return resolved
+
+
+@app.post("/v1/sovereign/qr-scheme-profiles")
+async def sovereign_qr_scheme_profile_create(payload: SovereignQrSchemeProfileCreate, request: Request):
+    await _require_resource_authorization(request, {
+        "type": "sovereign_qr_scheme_profile",
+        "action": "create",
+        "participant_id": payload.participant_id,
+        "profile_key": payload.profile_key.lower(),
+        "mai_id": payload.mai_id,
+    })
+    try:
+        return register_qr_scheme_profile(
+            payload.participant_id,
+            payload.profile_key,
+            payload.mai_id,
+            payload.allocation_ref,
+        )
+    except SovereignError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/v1/sovereign/qr")
+async def sovereign_qr_create(payload: SovereignQrCreate, request: Request):
+    await _require_resource_authorization(request, {
+        "type": "sovereign_qr",
+        "action": "create",
+        "participant_id": payload.participant_id,
+        "currency": payload.currency.upper(),
+        "amount_minor": payload.amount_minor,
+        "profile_key": payload.profile_key.lower(),
+        "channel": payload.channel.lower(),
+    })
+    try:
+        return create_qr_record(
+            payload.participant_id,
+            payload.merchant_ref,
+            payload.alias,
+            payload.currency,
+            amount_minor=payload.amount_minor,
+            expires_at=payload.expires_at,
+            profile_key=payload.profile_key,
+            scheme_profile_id=payload.scheme_profile_id,
+            channel=payload.channel,
+        )
+    except SovereignError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.get("/v1/sovereign/qr/{qr_id}")
+async def sovereign_qr_get(qr_id: str, nonce: str, request: Request):
+    await _require_resource_authorization(request, {"type": "sovereign_qr", "id": qr_id, "action": "read"})
+    record = resolve_qr_record(qr_id, nonce)
+    if not record:
+        raise HTTPException(404, "QR record not found")
+    return record
+
+
+@app.post("/v1/sovereign/requests-to-pay")
+async def sovereign_request_to_pay_create(
+    payload: SovereignRequestToPayCreate,
+    request: Request,
+    idempotency_key: str = Header(alias="Idempotency-Key"),
+):
+    await _require_resource_authorization(request, {
+        "type": "sovereign_request_to_pay",
+        "action": "create",
+        "payee_alias": payload.payee_alias.lower(),
+        "payer_alias": payload.payer_alias.lower(),
+        "amount_minor": payload.amount_minor,
+        "currency": payload.currency.upper(),
+    })
+    try:
+        return create_request_to_pay(
+            payload.payee_alias,
+            payload.payer_alias,
+            payload.amount_minor,
+            payload.currency,
+            payload.reference,
+            idempotency_key,
+        )
+    except SovereignError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/v1/sovereign/requests-to-pay/{request_id}/response")
+async def sovereign_request_to_pay_response(
+    request_id: str,
+    payload: SovereignRequestToPayResponse,
+    request: Request,
+):
+    await _require_resource_authorization(request, {
+        "type": "sovereign_request_to_pay",
+        "id": request_id,
+        "action": "respond",
+        "decision": payload.decision.lower(),
+        "actor_alias": payload.actor_alias.lower(),
+    })
+    try:
+        return respond_request_to_pay(request_id, payload.decision, payload.actor_alias)
+    except SovereignError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @app.post("/v1/merchants")

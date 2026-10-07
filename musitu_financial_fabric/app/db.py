@@ -26,6 +26,25 @@ CREATE TABLE IF NOT EXISTS route_decisions (id INTEGER PRIMARY KEY AUTOINCREMENT
 CREATE TABLE IF NOT EXISTS agent_mandate_reservations (idempotency_key TEXT PRIMARY KEY,mandate_id TEXT NOT NULL REFERENCES agent_mandates(id),day_utc TEXT NOT NULL,amount_minor INTEGER NOT NULL,currency TEXT NOT NULL,status TEXT NOT NULL,payment_id TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS ix_agent_mandate_reservations_daily ON agent_mandate_reservations(mandate_id,day_utc,status);
 CREATE TABLE IF NOT EXISTS payment_idempotency (idempotency_key TEXT PRIMARY KEY,request_hash TEXT NOT NULL,status TEXT NOT NULL,payment_id TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS scheme_participants (id TEXT PRIMARY KEY,name TEXT NOT NULL,participant_type TEXT NOT NULL,scheme_code TEXT NOT NULL UNIQUE,status TEXT NOT NULL,created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS payment_aliases (id TEXT PRIMARY KEY,participant_id TEXT NOT NULL REFERENCES scheme_participants(id),alias TEXT NOT NULL UNIQUE,account_ref TEXT NOT NULL,alias_type TEXT NOT NULL,created_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS ix_payment_aliases_participant ON payment_aliases(participant_id);
+CREATE TABLE IF NOT EXISTS qr_scheme_profiles (id TEXT PRIMARY KEY,participant_id TEXT NOT NULL REFERENCES scheme_participants(id),profile_key TEXT NOT NULL,mai_id TEXT NOT NULL,allocation_ref TEXT NOT NULL,external_verification INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL,UNIQUE(profile_key,mai_id),UNIQUE(profile_key,participant_id));
+CREATE TABLE IF NOT EXISTS scheme_qr_records (id TEXT PRIMARY KEY,participant_id TEXT NOT NULL REFERENCES scheme_participants(id),merchant_ref TEXT NOT NULL,alias TEXT NOT NULL,currency TEXT NOT NULL,amount_minor INTEGER,nonce TEXT NOT NULL UNIQUE,expires_at TEXT,profile_key TEXT NOT NULL DEFAULT 'generic',scheme_profile_id TEXT REFERENCES qr_scheme_profiles(id),channel TEXT NOT NULL DEFAULT 'pos',point_of_initiation_method TEXT NOT NULL DEFAULT '11',reference_tag_62_05 TEXT,serialization_status TEXT NOT NULL DEFAULT 'internal_reference',created_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS ix_scheme_qr_records_participant ON scheme_qr_records(participant_id);
+CREATE TABLE IF NOT EXISTS request_to_pay (id TEXT PRIMARY KEY,idempotency_key TEXT NOT NULL UNIQUE,request_hash TEXT NOT NULL,payee_alias TEXT NOT NULL,payer_alias TEXT NOT NULL,amount_minor INTEGER NOT NULL,currency TEXT NOT NULL,reference TEXT NOT NULL,status TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS ix_request_to_pay_payer_status ON request_to_pay(payer_alias,status);
+CREATE INDEX IF NOT EXISTS ix_request_to_pay_payee_status ON request_to_pay(payee_alias,status);
+CREATE TABLE IF NOT EXISTS scheme_certification_cases (id TEXT PRIMARY KEY,participant_id TEXT NOT NULL REFERENCES scheme_participants(id),scheme_profile TEXT NOT NULL,evidence_ref TEXT NOT NULL,required_checks_json TEXT NOT NULL,status TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS scheme_certification_checks (id TEXT PRIMARY KEY,case_id TEXT NOT NULL REFERENCES scheme_certification_cases(id),check_key TEXT NOT NULL,result TEXT NOT NULL,evidence_ref TEXT NOT NULL,actor TEXT NOT NULL,payload_hash TEXT NOT NULL,created_at TEXT NOT NULL,UNIQUE(case_id,check_key));
+CREATE TABLE IF NOT EXISTS scheme_settlement_cycles (id TEXT PRIMARY KEY,profile_key TEXT NOT NULL,cycle_ref TEXT NOT NULL,currency TEXT NOT NULL,status TEXT NOT NULL,settlement_evidence_ref TEXT,external_settlement_verified BOOLEAN NOT NULL DEFAULT FALSE,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,UNIQUE(profile_key,cycle_ref));
+CREATE TABLE IF NOT EXISTS scheme_clearing_obligations (id TEXT PRIMARY KEY,cycle_id TEXT NOT NULL REFERENCES scheme_settlement_cycles(id),debtor_participant_id TEXT NOT NULL REFERENCES scheme_participants(id),creditor_participant_id TEXT NOT NULL REFERENCES scheme_participants(id),amount_minor BIGINT NOT NULL,external_ref TEXT NOT NULL,payload_hash TEXT NOT NULL,created_at TEXT NOT NULL,UNIQUE(cycle_id,external_ref));
+CREATE INDEX IF NOT EXISTS ix_scheme_clearing_obligations_cycle ON scheme_clearing_obligations(cycle_id);
+CREATE TABLE IF NOT EXISTS scheme_exceptions (id TEXT PRIMARY KEY,idempotency_key TEXT NOT NULL UNIQUE,request_hash TEXT NOT NULL,transaction_ref TEXT NOT NULL,kind TEXT NOT NULL,claimant_participant_id TEXT NOT NULL REFERENCES scheme_participants(id),reason TEXT NOT NULL,status TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS scheme_exception_evidence (id TEXT PRIMARY KEY,exception_id TEXT NOT NULL REFERENCES scheme_exceptions(id),evidence_ref TEXT NOT NULL,actor TEXT NOT NULL,payload_hash TEXT NOT NULL,created_at TEXT NOT NULL,UNIQUE(exception_id,evidence_ref));
+CREATE TABLE IF NOT EXISTS country_profile_dependencies (id TEXT PRIMARY KEY,profile_key TEXT NOT NULL,dependency_key TEXT NOT NULL,status TEXT NOT NULL,evidence_ref TEXT,actor TEXT NOT NULL,authorization_decision_id TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,UNIQUE(profile_key,dependency_key));
+CREATE TABLE IF NOT EXISTS country_profile_evidence_records (id TEXT PRIMARY KEY,profile_key TEXT NOT NULL,dependency_key TEXT NOT NULL,evidence_ref TEXT NOT NULL UNIQUE,source_authority TEXT NOT NULL,source_version TEXT NOT NULL,source_location TEXT NOT NULL,source_sha256 TEXT NOT NULL,status TEXT NOT NULL,registered_by TEXT NOT NULL,registered_at TEXT NOT NULL,verified_by TEXT,verification_authorization_decision_id TEXT,verified_at TEXT,revoked_by TEXT,revocation_authorization_decision_id TEXT,revocation_reason TEXT,revoked_at TEXT,payload_hash TEXT NOT NULL);
+
 """
 
 POSTGRES_SCHEMA = """
@@ -44,6 +63,25 @@ CREATE TABLE IF NOT EXISTS route_decisions (id BIGSERIAL PRIMARY KEY,payment_id 
 CREATE TABLE IF NOT EXISTS agent_mandate_reservations (idempotency_key TEXT PRIMARY KEY,mandate_id TEXT NOT NULL REFERENCES agent_mandates(id),day_utc TEXT NOT NULL,amount_minor BIGINT NOT NULL,currency TEXT NOT NULL,status TEXT NOT NULL,payment_id TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS ix_agent_mandate_reservations_daily ON agent_mandate_reservations(mandate_id,day_utc,status);
 CREATE TABLE IF NOT EXISTS payment_idempotency (idempotency_key TEXT PRIMARY KEY,request_hash TEXT NOT NULL,status TEXT NOT NULL,payment_id TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS scheme_participants (id TEXT PRIMARY KEY,name TEXT NOT NULL,participant_type TEXT NOT NULL,scheme_code TEXT NOT NULL UNIQUE,status TEXT NOT NULL,created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS payment_aliases (id TEXT PRIMARY KEY,participant_id TEXT NOT NULL REFERENCES scheme_participants(id),alias TEXT NOT NULL UNIQUE,account_ref TEXT NOT NULL,alias_type TEXT NOT NULL,created_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS ix_payment_aliases_participant ON payment_aliases(participant_id);
+CREATE TABLE IF NOT EXISTS qr_scheme_profiles (id TEXT PRIMARY KEY,participant_id TEXT NOT NULL REFERENCES scheme_participants(id),profile_key TEXT NOT NULL,mai_id TEXT NOT NULL,allocation_ref TEXT NOT NULL,external_verification BOOLEAN NOT NULL DEFAULT FALSE,created_at TEXT NOT NULL,UNIQUE(profile_key,mai_id),UNIQUE(profile_key,participant_id));
+CREATE TABLE IF NOT EXISTS scheme_qr_records (id TEXT PRIMARY KEY,participant_id TEXT NOT NULL REFERENCES scheme_participants(id),merchant_ref TEXT NOT NULL,alias TEXT NOT NULL,currency TEXT NOT NULL,amount_minor BIGINT,nonce TEXT NOT NULL UNIQUE,expires_at TEXT,profile_key TEXT NOT NULL DEFAULT 'generic',scheme_profile_id TEXT REFERENCES qr_scheme_profiles(id),channel TEXT NOT NULL DEFAULT 'pos',point_of_initiation_method TEXT NOT NULL DEFAULT '11',reference_tag_62_05 TEXT,serialization_status TEXT NOT NULL DEFAULT 'internal_reference',created_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS ix_scheme_qr_records_participant ON scheme_qr_records(participant_id);
+CREATE TABLE IF NOT EXISTS request_to_pay (id TEXT PRIMARY KEY,idempotency_key TEXT NOT NULL UNIQUE,request_hash TEXT NOT NULL,payee_alias TEXT NOT NULL,payer_alias TEXT NOT NULL,amount_minor BIGINT NOT NULL,currency TEXT NOT NULL,reference TEXT NOT NULL,status TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS ix_request_to_pay_payer_status ON request_to_pay(payer_alias,status);
+CREATE INDEX IF NOT EXISTS ix_request_to_pay_payee_status ON request_to_pay(payee_alias,status);
+CREATE TABLE IF NOT EXISTS scheme_certification_cases (id TEXT PRIMARY KEY,participant_id TEXT NOT NULL REFERENCES scheme_participants(id),scheme_profile TEXT NOT NULL,evidence_ref TEXT NOT NULL,required_checks_json TEXT NOT NULL,status TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS scheme_certification_checks (id TEXT PRIMARY KEY,case_id TEXT NOT NULL REFERENCES scheme_certification_cases(id),check_key TEXT NOT NULL,result TEXT NOT NULL,evidence_ref TEXT NOT NULL,actor TEXT NOT NULL,payload_hash TEXT NOT NULL,created_at TEXT NOT NULL,UNIQUE(case_id,check_key));
+
+CREATE TABLE IF NOT EXISTS scheme_settlement_cycles (id TEXT PRIMARY KEY,profile_key TEXT NOT NULL,cycle_ref TEXT NOT NULL,currency TEXT NOT NULL,status TEXT NOT NULL,settlement_evidence_ref TEXT,external_settlement_verified BOOLEAN NOT NULL DEFAULT FALSE,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,UNIQUE(profile_key,cycle_ref));
+CREATE TABLE IF NOT EXISTS scheme_clearing_obligations (id TEXT PRIMARY KEY,cycle_id TEXT NOT NULL REFERENCES scheme_settlement_cycles(id),debtor_participant_id TEXT NOT NULL REFERENCES scheme_participants(id),creditor_participant_id TEXT NOT NULL REFERENCES scheme_participants(id),amount_minor BIGINT NOT NULL,external_ref TEXT NOT NULL,payload_hash TEXT NOT NULL,created_at TEXT NOT NULL,UNIQUE(cycle_id,external_ref));
+CREATE INDEX IF NOT EXISTS ix_scheme_clearing_obligations_cycle ON scheme_clearing_obligations(cycle_id);
+CREATE TABLE IF NOT EXISTS scheme_exceptions (id TEXT PRIMARY KEY,idempotency_key TEXT NOT NULL UNIQUE,request_hash TEXT NOT NULL,transaction_ref TEXT NOT NULL,kind TEXT NOT NULL,claimant_participant_id TEXT NOT NULL REFERENCES scheme_participants(id),reason TEXT NOT NULL,status TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS scheme_exception_evidence (id TEXT PRIMARY KEY,exception_id TEXT NOT NULL REFERENCES scheme_exceptions(id),evidence_ref TEXT NOT NULL,actor TEXT NOT NULL,payload_hash TEXT NOT NULL,created_at TEXT NOT NULL,UNIQUE(exception_id,evidence_ref));
+CREATE TABLE IF NOT EXISTS country_profile_dependencies (id TEXT PRIMARY KEY,profile_key TEXT NOT NULL,dependency_key TEXT NOT NULL,status TEXT NOT NULL,evidence_ref TEXT,actor TEXT NOT NULL,authorization_decision_id TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,UNIQUE(profile_key,dependency_key));
+CREATE TABLE IF NOT EXISTS country_profile_evidence_records (id TEXT PRIMARY KEY,profile_key TEXT NOT NULL,dependency_key TEXT NOT NULL,evidence_ref TEXT NOT NULL UNIQUE,source_authority TEXT NOT NULL,source_version TEXT NOT NULL,source_location TEXT NOT NULL,source_sha256 TEXT NOT NULL,status TEXT NOT NULL,registered_by TEXT NOT NULL,registered_at TEXT NOT NULL,verified_by TEXT,verification_authorization_decision_id TEXT,verified_at TEXT,revoked_by TEXT,revocation_authorization_decision_id TEXT,revocation_reason TEXT,revoked_at TEXT,payload_hash TEXT NOT NULL);
 """
 
 
@@ -78,6 +116,76 @@ class _PostgresConnection:
             self._conn.execute(
                 "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
                 (str(bound[0]),),
+            )
+        if (
+            "select * from request_to_pay where idempotency_key=" in normalized
+            and len(bound) >= 1
+        ):
+            # SQLite BEGIN IMMEDIATE serializes the request-to-pay idempotency
+            # lookup/insert sequence. Preserve equivalent per-key serialization
+            # on PostgreSQL so concurrent identical keys observe one canonical
+            # request instead of racing the UNIQUE constraint.
+            self._conn.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                (str(bound[0]),),
+            )
+        if (
+            "select * from scheme_clearing_obligations where cycle_id=" in normalized
+            and "and external_ref=" in normalized
+            and len(bound) >= 2
+        ):
+            # Serialize clearing obligation idempotency by cycle + external
+            # reference. External references may legitimately repeat in other
+            # sovereign schemes or settlement cycles.
+            lock_key = f"{bound[0]}:{bound[1]}"
+            self._conn.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                (str(lock_key),),
+            )
+        if (
+            "select * from scheme_exceptions where idempotency_key=" in normalized
+            and len(bound) >= 1
+        ):
+            self._conn.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                (str(bound[0]),),
+            )
+        if (
+            "select * from scheme_exception_evidence where exception_id=" in normalized
+            and "and evidence_ref=" in normalized
+            and len(bound) >= 2
+        ):
+            lock_key = f"{bound[0]}:{bound[1]}"
+            self._conn.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                (str(lock_key),),
+            )
+        if (
+            "select * from country_profile_dependencies where profile_key=" in normalized
+            and "and dependency_key=" in normalized
+            and len(bound) >= 2
+        ):
+            lock_key = f"{bound[0]}:{bound[1]}"
+            self._conn.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                (str(lock_key),),
+            )
+        if (
+            "select * from country_profile_evidence_records where evidence_ref="
+            in normalized
+            and len(bound) >= 1
+        ):
+            self._conn.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                (f"evidence-ref:{bound[0]}",),
+            )
+        if (
+            "select * from country_profile_evidence_records where id=" in normalized
+            and len(bound) >= 1
+        ):
+            self._conn.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                (f"evidence-id:{bound[0]}",),
             )
         return self._conn.execute(statement.replace("?", "%s"), bound)
 

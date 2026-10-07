@@ -1,0 +1,44 @@
+{
+  "date": "2026-10-07",
+  "product": "MUSITU Sovereign Payments",
+  "recommended_initial_role": "technology_supplier_or_integration_layer_under_evaluation",
+  "sandbox": {
+    "route_status": "candidate_not_assumed",
+    "contact": "fintech@rbz.co.zw",
+    "application_window": "rolling",
+    "eligible_categories": [
+      "APIs",
+      "mobile money services",
+      "retail payments",
+      "money transfer services",
+      "financial inclusion products",
+      "cyber security products",
+      "regulatory technology products"
+    ],
+    "outside_financial_sector_may_apply": true,
+    "licensed_partner_required_before_live_testing": true,
+    "max_test_period_months": 24
+  },
+  "npsd": {
+    "contact": "npsd@rbz.co.zw",
+    "role_classification_required": true
+  },
+  "current_readiness": {
+    "technical_reference_implementation": true,
+    "independent_python_3_13_15_verification": true,
+    "hosted_core_gate_green": true,
+    "hosted_sovereign_gate_green": true,
+    "real_postgresql_uat": true,
+    "zero_live_funds_reference_uat": true,
+    "public_evidence_matrix": true,
+    "operator_specifications": false,
+    "licensed_partner": false,
+    "rbz_role_classification": false,
+    "sandbox_approval": false,
+    "zimswitch_uat_access": false,
+    "production_authorized": false
+  },
+  "next_authorizations": [
+    "owner approval to send RBZ/Zimswitch enquiries"
+  ]
+}
