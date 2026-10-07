@@ -1,0 +1,109 @@
+{
+  "date": "2026-10-07",
+  "branch": "feature/musitu-sovereign-payments-20261006",
+  "implementation_head": "8d512039cf074bb699fb22b78221686fe849bfd8",
+  "dataset": {
+    "name": "ULB / Worldline Credit Card Fraud Detection",
+    "source": "OpenML dataset 43627",
+    "download_url": "https://openml.org/data/v1/download/22102452/credit-card-fraud-detection.arff",
+    "source_page": "https://www.openml.org/search?id=43627&type=data",
+    "file_sha256": "f9b190614995080ee8ba205a75b538704a55f093b8c1991de10de4f23f6461de",
+    "row_fingerprint_sha256": "d983586bf7eb24068dc59823a55beee21bc3286a526e1764fa8bf8455c6a92d4",
+    "row_count": 284807,
+    "fraud_count": 492,
+    "legitimate_count": 284315,
+    "zero_amount_count": 1825,
+    "nonzero_amount_count": 282982,
+    "total_minor": 2516259001,
+    "min_nonzero_minor": 1,
+    "max_nonzero_minor": 2569116,
+    "first_time": "0.0",
+    "last_time": "172792.0",
+    "source_currency_disclosed": false,
+    "contract_currency_code": "XXX",
+    "raw_dataset_committed_to_git": false
+  },
+  "full_stream_scan": {
+    "switch_instruction_count": 282982,
+    "malformed_count": 0,
+    "elapsed_seconds": 3.7216030210000213,
+    "rows_per_second": 76528.04406942638,
+    "live_funds_moved": false,
+    "production_authorized": false,
+    "fraud_accuracy_evaluated": false
+  },
+  "sqlite_state_replay": {
+    "stages": [
+      {
+        "source_rows": 10000,
+        "obligations": 9885,
+        "fraud_labels": 38,
+        "disputes": 38,
+        "audit_events": 9926,
+        "elapsed_seconds": 10.337239796999995
+      },
+      {
+        "source_rows": 50000,
+        "obligations": 49572,
+        "fraud_labels": 148,
+        "disputes": 148,
+        "audit_events": 49723,
+        "elapsed_seconds": 48.793993279000006
+      },
+      {
+        "source_rows": 284807,
+        "obligations": 282982,
+        "fraud_labels": 492,
+        "disputes": 492,
+        "audit_events": 283477,
+        "elapsed_seconds": 281.58916423999995
+      }
+    ],
+    "full_obligations_per_second": 1004.9463400474208,
+    "full_audit_chain_valid": true,
+    "full_net_positions_balanced": true,
+    "full_net_positions_sum_minor": 0,
+    "identical_replay_same_id": true,
+    "conflicting_replay_failed_closed": true,
+    "payment_intents_created": 0,
+    "ledger_postings_created": 0
+  },
+  "postgres_state_replay": {
+    "postgres_version": "18.6",
+    "stages": [
+      {
+        "source_rows": 10000,
+        "obligations": 9885,
+        "fraud_labels": 38,
+        "disputes": 38,
+        "audit_events": 9926,
+        "elapsed_seconds": 40.92759150799998,
+        "rows_per_second": 244.33394762663553
+      },
+      {
+        "source_rows": 50000,
+        "obligations": 49572,
+        "fraud_labels": 148,
+        "disputes": 148,
+        "audit_events": 49723,
+        "elapsed_seconds": 210.29902008,
+        "rows_per_second": 237.7566951143161
+      }
+    ],
+    "audit_chain_valid": true,
+    "net_positions_balanced": true,
+    "net_positions_sum_minor": 0,
+    "identical_replay_same_id": true,
+    "conflicting_replay_failed_closed": true,
+    "payment_intents_created": 0,
+    "ledger_postings_created": 0
+  },
+  "claim_boundaries": {
+    "performance_certified": false,
+    "rbz_threshold_known": false,
+    "zimswitch_threshold_known": false,
+    "fraud_model_accuracy_tested": false,
+    "production_ready_claimed": false,
+    "note": "Sequential reference replay measures correctness and single-process behavior only. It is not a production throughput benchmark."
+  }
+}
