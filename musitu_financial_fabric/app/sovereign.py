@@ -1192,6 +1192,7 @@ def country_profile_gate(profile_key: str) -> dict:
             "source_authority": None,
             "source_version": None,
         }
+        evidence_binding_valid = False
         if evidence_ref and str(evidence_ref).startswith("evidence-record:"):
             parts = str(evidence_ref).split(":")
             if len(parts) == 4 and parts[2] == "sha256":
@@ -1208,6 +1209,7 @@ def country_profile_gate(profile_key: str) -> dict:
                     and str(evidence_row["status"]) == "externally_verified"
                     and str(evidence_row["source_sha256"]) == source_sha256
                 ):
+                    evidence_binding_valid = True
                     item.update(
                         {
                             "evidence_record_id": evidence_record_id,
@@ -1216,9 +1218,9 @@ def country_profile_gate(profile_key: str) -> dict:
                             "source_version": evidence_row["source_version"],
                         }
                     )
-                else:
-                    status = "reference"
-                    item["status"] = status
+        if status == "externally_verified" and not evidence_binding_valid:
+            status = "reference"
+            item["status"] = status
         dependencies[dependency_key] = item
         if status != "externally_verified":
             blockers.append(dependency_key)
@@ -1260,11 +1262,33 @@ def set_country_profile_dependency(
     if not authorization_decision_id:
         raise SovereignError("country profile dependency authorization decision is required")
     if status == "externally_verified" and not evidence_ref:
-        raise SovereignError("externally verified dependency requires evidence reference")
+        raise SovereignError("externally verified dependency requires evidence record")
 
     with connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
         try:
+            if status == "externally_verified":
+                parts = evidence_ref.split(":")
+                if len(parts) != 4 or parts[0] != "evidence-record" or parts[2] != "sha256":
+                    raise SovereignError(
+                        "externally verified dependency requires verified evidence record"
+                    )
+                evidence_record_id = parts[1]
+                source_sha256 = parts[3]
+                evidence_row = conn.execute(
+                    """SELECT * FROM country_profile_evidence_records
+                       WHERE id=? AND profile_key=? AND dependency_key=?""",
+                    (evidence_record_id, profile_key, dependency_key),
+                ).fetchone()
+                if (
+                    not evidence_row
+                    or str(evidence_row["status"]) != "externally_verified"
+                    or str(evidence_row["source_sha256"]) != source_sha256
+                ):
+                    raise SovereignError(
+                        "externally verified dependency requires verified evidence record"
+                    )
+
             existing = conn.execute(
                 """SELECT * FROM country_profile_dependencies
                    WHERE profile_key=? AND dependency_key=?""",
