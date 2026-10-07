@@ -1182,11 +1182,43 @@ def country_profile_gate(profile_key: str) -> dict:
     for dependency_key in required:
         row = persisted.get(dependency_key)
         status = str(row["status"]) if row else "unconfigured"
+        evidence_ref = row["evidence_ref"] if row else None
         item = {
             "status": status,
-            "evidence_ref": row["evidence_ref"] if row else None,
+            "evidence_ref": evidence_ref,
             "updated_at": row["updated_at"] if row else None,
+            "evidence_record_id": None,
+            "source_sha256": None,
+            "source_authority": None,
+            "source_version": None,
         }
+        if evidence_ref and str(evidence_ref).startswith("evidence-record:"):
+            parts = str(evidence_ref).split(":")
+            if len(parts) == 4 and parts[2] == "sha256":
+                evidence_record_id = parts[1]
+                source_sha256 = parts[3]
+                with connect() as evidence_conn:
+                    evidence_row = evidence_conn.execute(
+                        """SELECT * FROM country_profile_evidence_records
+                           WHERE id=? AND profile_key=? AND dependency_key=?""",
+                        (evidence_record_id, profile_key, dependency_key),
+                    ).fetchone()
+                if (
+                    evidence_row
+                    and str(evidence_row["status"]) == "externally_verified"
+                    and str(evidence_row["source_sha256"]) == source_sha256
+                ):
+                    item.update(
+                        {
+                            "evidence_record_id": evidence_record_id,
+                            "source_sha256": source_sha256,
+                            "source_authority": evidence_row["source_authority"],
+                            "source_version": evidence_row["source_version"],
+                        }
+                    )
+                else:
+                    status = "reference"
+                    item["status"] = status
         dependencies[dependency_key] = item
         if status != "externally_verified":
             blockers.append(dependency_key)
