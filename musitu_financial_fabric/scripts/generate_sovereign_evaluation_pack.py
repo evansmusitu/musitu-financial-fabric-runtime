@@ -48,9 +48,15 @@ def main(argv: list[str] | None = None) -> int:
 
     from app import db
     from app.sovereign_conformance import build_regulator_evaluation_pack
+    from app.sovereign_public_evidence import apply_zimbabwe_public_reference_evidence
     from app.sovereign_uat import run_reference_uat
 
     db.init_db()
+    if args.profile.strip().lower() == "zimbabwe-2026":
+        apply_zimbabwe_public_reference_evidence(
+            actor="public-evidence-audit",
+            authorization_decision_id="reference-only-20261007",
+        )
     uat = run_reference_uat("regulator-evaluation-pack")
     pack = build_regulator_evaluation_pack(args.profile, manifest, uat)
 
