@@ -92,6 +92,13 @@ _SOVEREIGN_CAPABILITIES = (
         "production_enabled": False,
         "moves_funds": False,
     },
+    {
+        "key": "country-adapter-conformance",
+        "name": "Sovereign Country Adapter Conformance Harness",
+        "phase": "reference",
+        "production_enabled": False,
+        "moves_funds": False,
+    },
 )
 
 
