@@ -1,0 +1,76 @@
+{
+  "profile_key": "zimbabwe-2026",
+  "status": "request_prepared_not_sent",
+  "contacts": {
+    "rbz_npsd": {
+      "email": "npsd@rbz.co.zw",
+      "phone": "+263 242 703000",
+      "source": "RBZ National Payment Systems public material"
+    },
+    "zimswitch": {
+      "email": "info@zimswitch.co.zw",
+      "phone": "+263 867 7010309",
+      "source": "Zimswitch official website"
+    }
+  },
+  "dependencies": {
+    "national_switch_message_interface": {
+      "status": "reference",
+      "requested_artifacts": [
+        "participant API/protocol specification",
+        "authentication/key management profile",
+        "payment initiation/status operations",
+        "idempotency/replay rules",
+        "error/retry semantics",
+        "reversal/refund mappings",
+        "sandbox/UAT access process",
+        "versioning/change management"
+      ]
+    },
+    "authoritative_mai_allocation": {
+      "status": "reference",
+      "requested_artifacts": [
+        "MAI allocation procedure",
+        "application/registration process",
+        "assigned MAI evidence format",
+        "namespace/reservation rules"
+      ]
+    },
+    "emvco_conformance": {
+      "status": "reference",
+      "requested_artifacts": [
+        "Zimbabwe QR scheme profile",
+        "local EMV data object rules",
+        "canonical payload examples",
+        "conformance test vectors",
+        "certification process",
+        "successful conformance evidence format"
+      ]
+    },
+    "participant_certification_pack": {
+      "status": "reference",
+      "requested_artifacts": [
+        "participant onboarding pack",
+        "mandatory UAT test cases",
+        "security/operational checks",
+        "performance/resilience thresholds",
+        "certification evidence",
+        "renewal/change control"
+      ]
+    },
+    "settlement_finality_rules": {
+      "status": "reference",
+      "requested_artifacts": [
+        "clearing/settlement model",
+        "settlement account requirements",
+        "windows/cutoffs",
+        "liquidity/limits",
+        "finality definition/evidence",
+        "exception/default treatment",
+        "reconciliation/reporting"
+      ]
+    }
+  },
+  "production_authorized": false,
+  "request_sent": false
+}
