@@ -1,0 +1,45 @@
+{
+  "product": "MUSITU Sovereign Payments",
+  "date": "2026-10-07",
+  "status": "pre_engagement",
+  "production_authorized": false,
+  "external_messages_sent": false,
+  "rooms": {
+    "01_engineering_verification": [
+      "VERIFICATION_20261006.md",
+      "PHASE3_REFERENCE_UAT_VERIFICATION_20261006.md",
+      "PHASE4_CONFORMANCE_VERIFICATION_20261007.md"
+    ],
+    "02_product_architecture": [
+      "PHASE1_SCOPE.md",
+      "ZIMBABWE_2026_PROFILE.md",
+      "NIPL_UPI_COMPETITIVE_READINESS_20261006.md"
+    ],
+    "03_public_regulatory_evidence": [
+      "ZIMBABWE_PUBLIC_EVIDENCE_MATRIX_20261007.md",
+      "ZIMBABWE_REGULATORY_ENTRY_PATH_20261007.md",
+      "ZIMBABWE_SANDBOX_READINESS_20261007.json"
+    ],
+    "04_operator_intake": [
+      "ZIMBABWE_OPERATOR_ADAPTER_MANIFEST_TEMPLATE.json",
+      "OPERATOR_INTAKE_PROCEDURE.md",
+      "ZIMBABWE_EXTERNAL_EVIDENCE_REQUEST_CHECKLIST.json"
+    ],
+    "05_external_engagement_drafts": [
+      "RBZ_ZIMSWITCH_TECHNICAL_EVALUATION_PROPOSAL_DRAFT.md",
+      "RBZ_ZIMSWITCH_EXTERNAL_EVIDENCE_REQUEST_20261007.md"
+    ],
+    "06_sandbox_preparation": [
+      "ZIMBABWE_SANDBOX_APPLICATION_SKELETON_20261007.md",
+      "ZIMBABWE_LICENSED_PARTNER_SELECTION_FRAMEWORK_20261007.md"
+    ]
+  },
+  "unresolved_external_dependencies": [
+    "national_switch_message_interface",
+    "authoritative_mai_allocation",
+    "emvco_conformance",
+    "participant_certification_pack",
+    "settlement_finality_rules"
+  ],
+  "next_authorization_boundary": "owner approval to send RBZ/Zimswitch enquiries"
+}
