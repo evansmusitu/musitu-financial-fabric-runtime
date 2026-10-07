@@ -170,6 +170,23 @@ class _PostgresConnection:
                 "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
                 (str(lock_key),),
             )
+        if (
+            "select * from country_profile_evidence_records where evidence_ref="
+            in normalized
+            and len(bound) >= 1
+        ):
+            self._conn.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                (f"evidence-ref:{bound[0]}",),
+            )
+        if (
+            "select * from country_profile_evidence_records where id=" in normalized
+            and len(bound) >= 1
+        ):
+            self._conn.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                (f"evidence-id:{bound[0]}",),
+            )
         return self._conn.execute(statement.replace("?", "%s"), bound)
 
     def executescript(self, script: str) -> None:
