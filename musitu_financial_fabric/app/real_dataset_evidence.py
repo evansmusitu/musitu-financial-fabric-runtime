@@ -6,6 +6,16 @@ import time
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
+from .audit import verify_audit_chain
+from .db import connect
+from .sovereign import (
+    SovereignError,
+    calculate_net_positions,
+    create_scheme_exception,
+    create_scheme_participant,
+    open_settlement_cycle,
+    record_clearing_obligation,
+)
 from .switch_contracts import SwitchTransferInstruction
 
 
@@ -191,4 +201,173 @@ def scan_ulb_arff(path: str | Path) -> dict:
         "runtime": {
             "elapsed_seconds": elapsed,
         },
+    }
+
+
+def _iter_ulb_rows(path: str | Path):
+    source = Path(path)
+    columns: list[str] = []
+    data_started = False
+    row_number = 0
+    with source.open("r", encoding="utf-8", newline="") as fh:
+        for raw_line in fh:
+            stripped = raw_line.strip()
+            if not stripped or stripped.startswith("%"):
+                continue
+            if not data_started:
+                if stripped.lower() == "@data":
+                    data_started = True
+                    missing = [name for name in _REQUIRED_ULB_COLUMNS if name not in columns]
+                    if missing:
+                        raise EvidenceError(
+                            "ULB dataset required columns missing: " + ", ".join(missing)
+                        )
+                    continue
+                attribute = _parse_attribute_name(stripped)
+                if attribute is not None:
+                    columns.append(attribute)
+                continue
+
+            values = next(csv.reader([raw_line]))
+            if len(values) != len(columns):
+                raise EvidenceError(
+                    f"ARFF row {row_number + 1} has {len(values)} values for {len(columns)} columns"
+                )
+            row_number += 1
+            row = dict(zip(columns, (value.strip() for value in values)))
+            class_text = row["Class"]
+            if class_text not in {"0", "1", "0.0", "1.0"}:
+                raise EvidenceError(f"unsupported class label at row {row_number}: {class_text}")
+            amount_minor = amount_to_minor_exact(row["Amount"])
+            if amount_minor < 0:
+                raise EvidenceError(f"negative amount at row {row_number}")
+            yield {
+                "row_number": row_number,
+                "time": row["Time"],
+                "amount_minor": amount_minor,
+                "is_fraud": class_text in {"1", "1.0"},
+            }
+
+    if not data_started:
+        raise EvidenceError("ARFF @data section not found")
+
+
+def replay_ulb_state(path: str | Path, *, limit: int | None = None) -> dict:
+    if limit is not None and int(limit) <= 0:
+        raise EvidenceError("replay limit must be positive")
+    limit = int(limit) if limit is not None else None
+
+    suffix = hashlib.sha256(f"{Path(path)}:{time.time_ns()}".encode("utf-8")).hexdigest()[:12]
+    payer = create_scheme_participant("ULB Replay Payer", "bank", f"ULBP{suffix}".upper())
+    payee = create_scheme_participant("ULB Replay Payee", "psp", f"ULBM{suffix}".upper())
+    cycle = open_settlement_cycle("real-dataset-ulb-2013", f"ulb-cycle-{suffix}", "XXX")
+
+    source_rows_processed = 0
+    obligations_recorded = 0
+    zero_amount_rows_skipped = 0
+    fraud_labels_observed = 0
+    disputes_created = 0
+    identical_replay_same_id = False
+    conflicting_replay_failed_closed = False
+    first_obligation: dict | None = None
+
+    for row in _iter_ulb_rows(path):
+        if limit is not None and source_rows_processed >= limit:
+            break
+        source_rows_processed += 1
+        amount_minor = int(row["amount_minor"])
+        external_ref = f"ulb-2013:row:{row['row_number']}"
+
+        if row["is_fraud"]:
+            fraud_labels_observed += 1
+            create_scheme_exception(
+                external_ref,
+                "dispute",
+                payee["id"],
+                "real-dataset-ground-truth-fraud-label",
+                f"ulb-dispute:{row['row_number']}:{suffix}",
+            )
+            disputes_created += 1
+
+        if amount_minor == 0:
+            zero_amount_rows_skipped += 1
+            continue
+
+        if row["row_number"] % 2:
+            debtor_id, creditor_id = payer["id"], payee["id"]
+        else:
+            debtor_id, creditor_id = payee["id"], payer["id"]
+
+        obligation = record_clearing_obligation(
+            cycle["id"],
+            debtor_id,
+            creditor_id,
+            amount_minor,
+            external_ref,
+        )
+        obligations_recorded += 1
+
+        if first_obligation is None:
+            first_obligation = obligation
+            replayed = record_clearing_obligation(
+                cycle["id"],
+                debtor_id,
+                creditor_id,
+                amount_minor,
+                external_ref,
+            )
+            identical_replay_same_id = replayed["id"] == obligation["id"]
+            try:
+                record_clearing_obligation(
+                    cycle["id"],
+                    debtor_id,
+                    creditor_id,
+                    amount_minor + 1,
+                    external_ref,
+                )
+            except SovereignError:
+                conflicting_replay_failed_closed = True
+
+    net_positions = calculate_net_positions(cycle["id"])
+    audit_valid, audit_events, audit_broken_at = verify_audit_chain()
+    with connect() as conn:
+        payment_intents = int(
+            conn.execute("SELECT COUNT(*) AS n FROM payment_intents").fetchone()["n"]
+        )
+        ledger_postings = int(
+            conn.execute("SELECT COUNT(*) AS n FROM ledger_postings").fetchone()["n"]
+        )
+
+    return {
+        "source_rows_processed": source_rows_processed,
+        "obligations_recorded": obligations_recorded,
+        "zero_amount_rows_skipped": zero_amount_rows_skipped,
+        "fraud_labels_observed": fraud_labels_observed,
+        "reference_disputes_created": disputes_created,
+        "idempotency": {
+            "identical_replay_same_id": identical_replay_same_id,
+            "conflicting_replay_failed_closed": conflicting_replay_failed_closed,
+        },
+        "net_positions": net_positions,
+        "audit": {
+            "valid": audit_valid,
+            "events": audit_events,
+            "broken_at": audit_broken_at,
+        },
+        "side_effects": {
+            "payment_intents": payment_intents,
+            "ledger_postings": ledger_postings,
+        },
+        "synthetic_fields": {
+            "participant_identity": True,
+            "routing_direction": True,
+        },
+        "real_fields": {
+            "amounts": True,
+            "time_order": True,
+            "fraud_labels": True,
+        },
+        "fraud_accuracy_evaluated": False,
+        "live_funds_moved": False,
+        "production_authorized": False,
     }
