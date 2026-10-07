@@ -73,6 +73,9 @@ def evaluate_country_adapter_manifest(profile_key: str, manifest: dict[str, Any]
         "behaviors": normalized_behaviors,
         "missing_behaviors": missing_behaviors,
         "country_external_dependencies_ready": external_ready,
+        "country_dependencies": {
+            key: dict(value) for key, value in gate["dependencies"].items()
+        },
         "country_blockers": list(gate["blockers"]),
         "adapter_ready": adapter_ready,
         "production_enabled": False,
