@@ -150,3 +150,20 @@ def test_evidence_table_exists_in_both_metadata_schemas():
     needle = "CREATE TABLE IF NOT EXISTS country_profile_evidence_records "
     assert SQLITE_SCHEMA.count(needle) == 1
     assert POSTGRES_SCHEMA.count(needle) == 1
+
+
+def test_free_form_external_verification_cannot_bypass_evidence_ledger(tmp_path):
+    _, _, sovereign, _ = setup_modules(tmp_path)
+
+    with pytest.raises(sovereign.SovereignError, match="evidence record"):
+        sovereign.set_country_profile_dependency(
+            "zimbabwe-2026",
+            "national_switch_message_interface",
+            "externally_verified",
+            evidence_ref="free-form-operator-claim",
+            actor="operator",
+            authorization_decision_id="legacy-bypass",
+        )
+
+    gate = sovereign.country_profile_gate("zimbabwe-2026")
+    assert "national_switch_message_interface" in gate["blockers"]
