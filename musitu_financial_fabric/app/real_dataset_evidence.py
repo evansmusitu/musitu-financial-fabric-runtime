@@ -252,7 +252,15 @@ def _iter_ulb_rows(path: str | Path):
         raise EvidenceError("ARFF @data section not found")
 
 
-def replay_ulb_state(path: str | Path, *, limit: int | None = None) -> dict:
+def replay_ulb_state(
+    path: str | Path,
+    *,
+    start_row: int = 1,
+    limit: int | None = None,
+) -> dict:
+    start_row = int(start_row)
+    if start_row <= 0:
+        raise EvidenceError("replay start row must be positive")
     if limit is not None and int(limit) <= 0:
         raise EvidenceError("replay limit must be positive")
     limit = int(limit) if limit is not None else None
@@ -270,11 +278,15 @@ def replay_ulb_state(path: str | Path, *, limit: int | None = None) -> dict:
     identical_replay_same_id = False
     conflicting_replay_failed_closed = False
     first_obligation: dict | None = None
+    source_end_row: int | None = None
 
     for row in _iter_ulb_rows(path):
+        if int(row["row_number"]) < start_row:
+            continue
         if limit is not None and source_rows_processed >= limit:
             break
         source_rows_processed += 1
+        source_end_row = int(row["row_number"])
         amount_minor = int(row["amount_minor"])
         external_ref = f"ulb-2013:row:{row['row_number']}"
 
@@ -339,6 +351,8 @@ def replay_ulb_state(path: str | Path, *, limit: int | None = None) -> dict:
         )
 
     return {
+        "source_start_row": start_row,
+        "source_end_row": source_end_row,
         "source_rows_processed": source_rows_processed,
         "obligations_recorded": obligations_recorded,
         "zero_amount_rows_skipped": zero_amount_rows_skipped,
